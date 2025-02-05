@@ -1,0 +1,32 @@
+{
+  "name": "rescript-stripe",
+  "version": "0.0.1",
+  "keywords": [
+    "rescript",
+    "stripe"
+  ],
+  "license": "MIT",
+  "author": "envio contributors <about@envio.dev>",
+  "scripts": {
+    "build": "rescript",
+    "res": "rescript -w",
+    "test": "ava",
+    "test-script": "node scripts/Test.res.mjs"
+  },
+  "ava": {
+    "files": [
+      "__tests__/**/*_test.res.mjs"
+    ]
+  },
+  "dependencies": {
+    "stripe": "^17.6.0"
+  },
+  "devDependencies": {
+    "@dzakh/rescript-ava": "^3.1.0",
+    "ava": "^6.2.0",
+    "rescript": "11.1.4"
+  },
+  "peerDependencies": {
+    "rescript": "^11.1.0"
+  }
+}
