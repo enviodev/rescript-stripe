@@ -11,7 +11,7 @@
     "build": "rescript",
     "res": "rescript -w",
     "test": "ava",
-    "test-script": "node scripts/Test.res.mjs"
+    "sync": "node scripts/Sync.res.mjs"
   },
   "ava": {
     "files": [

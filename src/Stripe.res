@@ -84,6 +84,8 @@ type taxBehavior =
   | @as("exclusive") Exclusive | @as("inclusive") Inclusive | @as("unspecified") Unspecified
 
 module Meter = {
+  type status = | @as("active") Active | @as("inactive") Inactive
+
   type t = {
     id: string,
     object: string,
@@ -122,6 +124,10 @@ module Meter = {
 
   @scope(("billing", "meters")) @send
   external create: (stripe, createParams) => promise<t> = "create"
+
+  type listParams = {status?: status, limit?: int}
+  @scope(("billing", "meters")) @send
+  external list: (stripe, ~params: listParams=?) => promise<page<t>> = "list"
 }
 
 module Price = {
@@ -133,6 +139,13 @@ module Price = {
 
   type usageType = | @as("metered") Metered | @as("licensed") Licensed
 
+  type recurring = {
+    interval: interval,
+    meter: Js.Null.t<string>,
+    @as("interval_count") intervalCount: int,
+    @as("usage_type") usageType: usageType,
+  }
+
   type t = {
     id: string,
     active: bool,
@@ -140,7 +153,7 @@ module Price = {
     metadata: dict<string>,
     nickname: Js.Null.t<string>,
     product: string,
-    recurring: unknown,
+    recurring: Js.Null.t<recurring>,
     interval: interval,
     created: int,
     @as("lookup_key")
@@ -258,11 +271,7 @@ module Product = {
 
 module ProductCatalog = {
   type recurringConfig =
-    | Metered({
-        interval: Price.interval,
-        unitLabel: string,
-        defaultAggregation: Meter.defaultAggregation,
-      })
+    | Metered({interval: Price.interval, unitLabel: string})
     | Licensed({interval: Price.interval})
 
   type priceConfig = {
@@ -280,7 +289,11 @@ module ProductCatalog = {
 
   type t = {products: array<productConfig>}
 
-  let syncProduct = async (stripe: stripe, productConfig: productConfig) => {
+  let syncProduct = async (
+    stripe: stripe,
+    productConfig: productConfig,
+    ~meters: option<dict<Meter.t>>=?,
+  ) => {
     let configuredUnitLabel = ref(None)
     let unsyncedPriceConfigs = Js.Dict.empty()
 
@@ -296,8 +309,15 @@ module ProductCatalog = {
         | None => ()
         | Some(anotherUnitLabel) =>
           Js.Exn.raiseError(
-            `The product '${productConfig.name}' has two different unit labels: ${anotherUnitLabel} and ${unitLabel}. It's allowed to have only one unit label.`,
+            `Product "${productConfig.name}" has two different unit labels: ${anotherUnitLabel} and ${unitLabel}. It's allowed to have only one unit label`,
           )
+        }
+        switch meters {
+        | None =>
+          Js.Exn.raiseError(
+            `Product "${productConfig.name}" has a mettered price. It's required to provide a map of metters to perform the sync`,
+          )
+        | Some(_) => ()
         }
         configuredUnitLabel := Some(unitLabel)
       }
@@ -310,7 +330,7 @@ module ProductCatalog = {
         productConfig.prices->Js.Array2.length
     ) {
       Js.Exn.raiseError(
-        `The product '${productConfig.name}' has price configurations with duplicated lookup keys. It's allowed to have only unique lookup keys.`,
+        `Product '${productConfig.name}' has price configurations with duplicated lookup keys. It's allowed to have only unique lookup keys.`,
       )
     }
 
@@ -376,8 +396,8 @@ module ProductCatalog = {
       )
     }
 
-    let createPriceFromConfig = (priceConfig, ~transferLookupKey=?) =>
-      stripe->Price.create({
+    let createPriceFromConfig = async (priceConfig, ~transferLookupKey=?) => {
+      await stripe->Price.create({
         currency: priceConfig.currency,
         product: product.id,
         unitAmountInCents: priceConfig.unitAmountInCents,
@@ -385,14 +405,31 @@ module ProductCatalog = {
         recurring: switch priceConfig.recurring {
         | Licensed({interval}) => {interval: interval}
         | Metered({interval}) => {
-            interval,
-            usageType: Metered,
-            // TODO:
-            // meter: meter.id
+            let meter = switch meters->Belt.Option.getExn->Js.Dict.get(priceConfig.lookupKey) {
+            | Some(meter) => meter
+            | None =>
+              Js.log(`Meter "${priceConfig.lookupKey}" does not exist. Creating...`)
+              let meter = await stripe->Meter.create({
+                displayName: priceConfig.lookupKey,
+                eventName: priceConfig.lookupKey,
+                defaultAggregation: {
+                  formula: Sum,
+                },
+              })
+              Js.log(`Meter "${priceConfig.lookupKey}" successfully created. Meter ID: ${meter.id}`)
+              meter
+            }
+
+            {
+              interval,
+              usageType: Metered,
+              meter: meter.id,
+            }
           }
         },
         ?transferLookupKey,
       })
+    }
 
     let priceUpdatePromises = prices.data->Js.Array2.map(async price => {
       let maybePriceConfig = switch price.lookupKey {
@@ -405,7 +442,25 @@ module ProductCatalog = {
         Js.log(`Found an existing price "${priceConfig.lookupKey}". Price ID: ${price.id}`)
         let isPriceInSync =
           priceConfig.currency === price.currency &&
-            Js.Null.Value(priceConfig.unitAmountInCents) === price.unitAmountInCents // TODO: recurring
+          Js.Null.Value(priceConfig.unitAmountInCents) === price.unitAmountInCents &&
+          switch price.recurring {
+          | Null => false
+          | Value(priceRecurring) =>
+            switch priceConfig.recurring {
+            | Licensed({interval}) =>
+              priceRecurring.usageType === Licensed &&
+              priceRecurring.interval === interval &&
+              priceRecurring.meter === Null
+            | Metered({interval}) =>
+              priceRecurring.usageType === Metered &&
+              priceRecurring.interval === interval &&
+              priceRecurring.meter->Js.Null.toOption ===
+                meters
+                ->Belt.Option.getExn
+                ->Js.Dict.get(priceConfig.lookupKey)
+                ->Belt.Option.map(m => m.id)
+            }
+          }
         if isPriceInSync {
           Js.log(`Price "${priceConfig.lookupKey}" is in sync`)
         } else {
@@ -440,14 +495,36 @@ module ProductCatalog = {
       })
 
     let _ = await Stdlib.Promise.all(priceUpdatePromises->Js.Array2.concat(priceCreatePromises))
-
-    Js.log(`Successfully finished syncing product catalog`)
   }
 
-  let sync = (stripe: stripe, productCatalog: t) => {
+  let sync = async (stripe: stripe, productCatalog: t) => {
+    let isMeterNeeded = productCatalog.products->Js.Array2.some(p =>
+      p.prices->Js.Array2.some(p =>
+        switch p.recurring {
+        | Metered(_) => true
+        | _ => false
+        }
+      )
+    )
+
+    let meters = if isMeterNeeded {
+      Js.log(`Loading active meters...`)
+      let {data: meters} = await stripe->Meter.list(
+        ~params={
+          status: Active,
+          limit: 100,
+        },
+      )
+      Js.log(`Loaded ${meters->Js.Array2.length->Js.Int.toString} active meters`)
+      Some(meters->Js.Array2.map(meter => (meter.eventName, meter))->Js.Dict.fromArray)
+    } else {
+      None
+    }
+
     let _ =
-      productCatalog.products
-      ->Js.Array2.map(p => stripe->syncProduct(p))
+      await productCatalog.products
+      ->Js.Array2.map(p => stripe->syncProduct(p, ~meters?))
       ->Stdlib.Promise.all
+    Js.log(`Successfully finished syncing product catalog`)
   }
 }

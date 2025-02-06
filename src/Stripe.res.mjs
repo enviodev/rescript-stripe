@@ -3,6 +3,8 @@
 import * as Js_exn from "rescript/lib/es6/js_exn.js";
 import Stripe from "stripe";
 import * as Js_dict from "rescript/lib/es6/js_dict.js";
+import * as Belt_Option from "rescript/lib/es6/belt_Option.js";
+import * as Caml_option from "rescript/lib/es6/caml_option.js";
 import * as Caml_js_exceptions from "rescript/lib/es6/caml_js_exceptions.js";
 
 function $$catch(promise, callback) {
@@ -38,7 +40,7 @@ var Price = {};
 
 var Product = {};
 
-async function syncProduct(stripe, productConfig) {
+async function syncProduct(stripe, productConfig, meters) {
   var configuredUnitLabel;
   var unsyncedPriceConfigs = {};
   for(var idx = 0 ,idx_finish = productConfig.prices.length; idx < idx_finish; ++idx){
@@ -49,7 +51,12 @@ async function syncProduct(stripe, productConfig) {
       var unitLabel = match.unitLabel;
       var anotherUnitLabel = configuredUnitLabel;
       if (anotherUnitLabel !== undefined) {
-        Js_exn.raiseError("The product '" + productConfig.name + "' has two different unit labels: " + anotherUnitLabel + " and " + unitLabel + ". It's allowed to have only one unit label.");
+        Js_exn.raiseError("Product \"" + productConfig.name + "\" has two different unit labels: " + anotherUnitLabel + " and " + unitLabel + ". It's allowed to have only one unit label");
+      }
+      if (meters !== undefined) {
+        
+      } else {
+        Js_exn.raiseError("Product \"" + productConfig.name + "\" has a mettered price. It's required to provide a map of metters to perform the sync");
       }
       configuredUnitLabel = unitLabel;
     }
@@ -57,7 +64,7 @@ async function syncProduct(stripe, productConfig) {
   }
   var configuredUnitLabel$1 = configuredUnitLabel;
   if (Object.keys(unsyncedPriceConfigs).length !== productConfig.prices.length) {
-    Js_exn.raiseError("The product '" + productConfig.name + "' has price configurations with duplicated lookup keys. It's allowed to have only unique lookup keys.");
+    Js_exn.raiseError("Product '" + productConfig.name + "' has price configurations with duplicated lookup keys. It's allowed to have only unique lookup keys.");
   }
   console.log("Searching for active product \"" + productConfig.lookupKey + "\"...");
   var match$1 = await stripe.products.search({
@@ -124,16 +131,37 @@ async function syncProduct(stripe, productConfig) {
   if (prices.has_more) {
     Js_exn.raiseError("The pagination on prices is not supported yet. Product \"" + productConfig.lookupKey + "\" has to many active prices");
   }
-  var createPriceFromConfig = function (priceConfig, transferLookupKey) {
+  var createPriceFromConfig = async function (priceConfig, transferLookupKey) {
     var match = priceConfig.recurring;
     var tmp;
-    tmp = match.TAG === "Metered" ? ({
-          interval: match.interval,
-          usage_type: "metered"
-        }) : ({
-          interval: match.interval
-        });
-    return stripe.prices.create({
+    if (match.TAG === "Metered") {
+      var meter = Js_dict.get(Belt_Option.getExn(meters), priceConfig.lookupKey);
+      var meter$1;
+      if (meter !== undefined) {
+        meter$1 = meter;
+      } else {
+        console.log("Meter \"" + priceConfig.lookupKey + "\" does not exist. Creating...");
+        var meter$2 = await stripe.billing.meters.create({
+              default_aggregation: {
+                formula: "sum"
+              },
+              display_name: priceConfig.lookupKey,
+              event_name: priceConfig.lookupKey
+            });
+        console.log("Meter \"" + priceConfig.lookupKey + "\" successfully created. Meter ID: " + meter$2.id);
+        meter$1 = meter$2;
+      }
+      tmp = {
+        interval: match.interval,
+        meter: meter$1.id,
+        usage_type: "metered"
+      };
+    } else {
+      tmp = {
+        interval: match.interval
+      };
+    }
+    return await stripe.prices.create({
                 currency: priceConfig.currency,
                 product: product.id,
                 recurring: tmp,
@@ -149,19 +177,32 @@ async function syncProduct(stripe, productConfig) {
         if (maybePriceConfig !== undefined) {
           unsafeDeleteKey(unsyncedPriceConfigs, maybePriceConfig.lookupKey);
           console.log("Found an existing price \"" + maybePriceConfig.lookupKey + "\". Price ID: " + price.id);
-          var isPriceInSync = maybePriceConfig.currency === price.currency && maybePriceConfig.unitAmountInCents === price.unit_amount;
+          var isPriceInSync = false;
+          if (maybePriceConfig.currency === price.currency && maybePriceConfig.unitAmountInCents === price.unit_amount) {
+            var priceRecurring = price.recurring;
+            var tmp;
+            if (priceRecurring === null) {
+              tmp = false;
+            } else {
+              var match = maybePriceConfig.recurring;
+              tmp = match.TAG === "Metered" ? priceRecurring.usage_type === "metered" && priceRecurring.interval === match.interval && Caml_option.null_to_opt(priceRecurring.meter) === Belt_Option.map(Js_dict.get(Belt_Option.getExn(meters), maybePriceConfig.lookupKey), (function (m) {
+                        return m.id;
+                      })) : priceRecurring.usage_type === "licensed" && priceRecurring.interval === match.interval && priceRecurring.meter === null;
+            }
+            isPriceInSync = tmp;
+          }
           if (isPriceInSync) {
             console.log("Price \"" + maybePriceConfig.lookupKey + "\" is in sync");
             return ;
           }
           console.log("Price \"" + maybePriceConfig.lookupKey + "\" is not in sync. Updating...");
-          var match = await Promise.all([
+          var match$1 = await Promise.all([
                 createPriceFromConfig(maybePriceConfig, true),
                 stripe.prices.update(price.id, {
                       active: false
                     })
               ]);
-          console.log("Price \"" + maybePriceConfig.lookupKey + "\" successfully recreated with the new values. New Price ID: " + match[0].id + ". Old Price ID: " + price.id);
+          console.log("Price \"" + maybePriceConfig.lookupKey + "\" successfully recreated with the new values. New Price ID: " + match$1[0].id + ". Old Price ID: " + price.id);
           return ;
         }
         console.log("Price " + price.id + " with lookupKey " + price.lookup_key + " is not configured on product " + productConfig.lookupKey + ". Setting it to inactive...");
@@ -176,13 +217,41 @@ async function syncProduct(stripe, productConfig) {
         console.log("Price \"" + priceConfig.lookupKey + "\" successfully created. Price ID: " + price.id);
       });
   await Promise.all(priceUpdatePromises.concat(priceCreatePromises));
-  console.log("Successfully finished syncing product catalog");
 }
 
-function sync(stripe, productCatalog) {
-  Promise.all(productCatalog.products.map(function (p) {
-            return syncProduct(stripe, p);
+async function sync(stripe, productCatalog) {
+  var isMeterNeeded = productCatalog.products.some(function (p) {
+        return p.prices.some(function (p) {
+                    var match = p.recurring;
+                    if (match.TAG === "Metered") {
+                      return true;
+                    } else {
+                      return false;
+                    }
+                  });
+      });
+  var meters;
+  if (isMeterNeeded) {
+    console.log("Loading active meters...");
+    var match = await stripe.billing.meters.list({
+          status: "active",
+          limit: 100
+        });
+    var meters$1 = match.data;
+    console.log("Loaded " + meters$1.length.toString() + " active meters");
+    meters = Js_dict.fromArray(meters$1.map(function (meter) {
+              return [
+                      meter.event_name,
+                      meter
+                    ];
+            }));
+  } else {
+    meters = undefined;
+  }
+  await Promise.all(productCatalog.products.map(function (p) {
+            return syncProduct(stripe, p, meters);
           }));
+  console.log("Successfully finished syncing product catalog");
 }
 
 var ProductCatalog = {
