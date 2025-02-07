@@ -41,28 +41,20 @@ var Price = {};
 var Product = {};
 
 async function syncProduct(stripe, productConfig, meters) {
-  var configuredUnitLabel;
   var unsyncedPriceConfigs = {};
   for(var idx = 0 ,idx_finish = productConfig.prices.length; idx < idx_finish; ++idx){
     var priceConfig = productConfig.prices[idx];
     unsyncedPriceConfigs[priceConfig.lookupKey] = priceConfig;
     var match = priceConfig.recurring;
     if (match.TAG === "Metered") {
-      var unitLabel = match.unitLabel;
-      var anotherUnitLabel = configuredUnitLabel;
-      if (anotherUnitLabel !== undefined) {
-        Js_exn.raiseError("Product \"" + productConfig.name + "\" has two different unit labels: " + anotherUnitLabel + " and " + unitLabel + ". It's allowed to have only one unit label");
-      }
       if (meters !== undefined) {
         
       } else {
         Js_exn.raiseError("Product \"" + productConfig.name + "\" has a mettered price. It's required to provide a map of metters to perform the sync");
       }
-      configuredUnitLabel = unitLabel;
     }
     
   }
-  var configuredUnitLabel$1 = configuredUnitLabel;
   if (Object.keys(unsyncedPriceConfigs).length !== productConfig.prices.length) {
     Js_exn.raiseError("Product '" + productConfig.name + "' has price configurations with duplicated lookup keys. It's allowed to have only unique lookup keys.");
   }
@@ -85,7 +77,7 @@ async function syncProduct(stripe, productConfig, meters) {
                     "lookup_key",
                     productConfig.lookupKey
                   ]]),
-            unit_label: configuredUnitLabel$1
+            unit_label: productConfig.unitLabel
           });
       console.log("Product \"" + productConfig.lookupKey + "\" successfully created. Product ID: " + p.id);
       product = p;
@@ -95,18 +87,19 @@ async function syncProduct(stripe, productConfig, meters) {
     console.log("Found an existing product \"" + productConfig.lookupKey + "\". Product ID: " + p$1.id);
     var fieldsToSync = {};
     var match$3 = p$1.unit_label;
+    var match$4 = productConfig.unitLabel;
     var exit = 0;
     if (match$3 === null) {
-      if (configuredUnitLabel$1 !== undefined) {
+      if (match$4 !== undefined) {
         exit = 1;
       }
       
-    } else if (!(configuredUnitLabel$1 !== undefined && match$3 === configuredUnitLabel$1)) {
+    } else if (!(match$4 !== undefined && match$3 === match$4)) {
       exit = 1;
     }
     if (exit === 1) {
-      if (configuredUnitLabel$1 !== undefined) {
-        fieldsToSync.unit_label = configuredUnitLabel$1;
+      if (match$4 !== undefined) {
+        fieldsToSync.unit_label = match$4;
       } else {
         fieldsToSync.unit_label = "";
       }
@@ -259,6 +252,14 @@ var ProductCatalog = {
   sync: sync
 };
 
+var Customer = {};
+
+var Session = {};
+
+var Checkout = {
+  Session: Session
+};
+
 export {
   Stdlib ,
   make ,
@@ -266,5 +267,7 @@ export {
   Price ,
   Product ,
   ProductCatalog ,
+  Customer ,
+  Checkout ,
 }
 /* stripe Not a pure module */

@@ -271,7 +271,7 @@ module Product = {
 
 module ProductCatalog = {
   type recurringConfig =
-    | Metered({interval: Price.interval, unitLabel: string})
+    | Metered({interval: Price.interval})
     | Licensed({interval: Price.interval})
 
   type priceConfig = {
@@ -285,6 +285,7 @@ module ProductCatalog = {
     name: string,
     lookupKey: string,
     prices: array<priceConfig>,
+    unitLabel?: string,
   }
 
   type t = {products: array<productConfig>}
@@ -294,24 +295,14 @@ module ProductCatalog = {
     productConfig: productConfig,
     ~meters: option<dict<Meter.t>>=?,
   ) => {
-    let configuredUnitLabel = ref(None)
     let unsyncedPriceConfigs = Js.Dict.empty()
 
     for idx in 0 to productConfig.prices->Js.Array2.length - 1 {
       let priceConfig = productConfig.prices->Js.Array2.unsafe_get(idx)
-
       unsyncedPriceConfigs->Js.Dict.set(priceConfig.lookupKey, priceConfig)
-
       switch priceConfig.recurring {
       | Licensed(_) => ()
-      | Metered({unitLabel}) =>
-        switch configuredUnitLabel.contents {
-        | None => ()
-        | Some(anotherUnitLabel) =>
-          Js.Exn.raiseError(
-            `Product "${productConfig.name}" has two different unit labels: ${anotherUnitLabel} and ${unitLabel}. It's allowed to have only one unit label`,
-          )
-        }
+      | Metered(_) =>
         switch meters {
         | None =>
           Js.Exn.raiseError(
@@ -319,11 +310,8 @@ module ProductCatalog = {
           )
         | Some(_) => ()
         }
-        configuredUnitLabel := Some(unitLabel)
       }
     }
-
-    let configuredUnitLabel = configuredUnitLabel.contents
 
     if (
       unsyncedPriceConfigs->Js.Dict.keys->Js.Array2.length !==
@@ -343,7 +331,7 @@ module ProductCatalog = {
         Js.log(`No active product "${productConfig.lookupKey}" found. Creating a new one...`)
         let p = await stripe->Product.create({
           name: productConfig.name,
-          unitLabel: ?configuredUnitLabel,
+          unitLabel: ?productConfig.unitLabel,
           metadata: Js.Dict.fromArray([("lookup_key", productConfig.lookupKey)]),
         })
         Js.log(`Product "${productConfig.lookupKey}" successfully created. Product ID: ${p.id}`)
@@ -354,7 +342,7 @@ module ProductCatalog = {
 
         let fieldsToSync: Product.updateParams = {}
 
-        switch (p.unitLabel, configuredUnitLabel) {
+        switch (p.unitLabel, productConfig.unitLabel) {
         | (Value(v), Some(configured)) if v === configured => ()
         | (Null, None) => ()
         | (_, Some(configured)) => fieldsToSync.unitLabel = Some(configured)
@@ -526,5 +514,76 @@ module ProductCatalog = {
       ->Js.Array2.map(p => stripe->syncProduct(p, ~meters?))
       ->Stdlib.Promise.all
     Js.log(`Successfully finished syncing product catalog`)
+  }
+}
+
+module Customer = {
+  type t = {
+    id: string,
+    metadata: dict<string>,
+    email: Js.Null.t<string>,
+    name: Js.Null.t<string>,
+  }
+
+  type createParams = {
+    name?: string,
+    email?: string,
+    metadata?: dict<string>,
+  }
+  @scope("customers") @send
+  external create: (stripe, createParams) => promise<t> = "create"
+
+  type searchParams = {
+    query: string,
+    limit?: int,
+    page?: int,
+  }
+  @scope("customers") @send
+  external search: (stripe, searchParams) => promise<page<t>> = "search"
+}
+
+module Checkout = {
+  module Session = {
+    type t = {
+      id: string,
+      url: Js.Null.t<string>,
+    }
+
+    type termsOfService = | @as("none") None | @as("required") Required
+    type mode = | @as("payment") Payment | @as("setup") Setup | @as("subscription") Subscription
+
+    type lineItemParam = {
+      price: string,
+      quantity?: int,
+    }
+
+    type consentCollectionParams = {
+      @as("terms_of_service")
+      termsOfService: termsOfService,
+    }
+
+    type subscriptionDataParams = {
+      description?: string,
+      metadata?: dict<string>,
+    }
+
+    type createParams = {
+      mode: mode,
+      @as("success_url")
+      successUrl?: string,
+      @as("cancel_url")
+      cancelUrl?: string,
+      @as("consent_collection")
+      consentCollection?: consentCollectionParams,
+      @as("subscription_data")
+      subscriptionData?: subscriptionDataParams,
+      @as("allow_promotion_codes")
+      allowPromotionCodes?: bool,
+      customer?: string,
+      @as("line_items")
+      lineItems?: array<lineItemParam>,
+    }
+    @scope(("checkout", "sessions")) @send
+    external create: (stripe, createParams) => promise<t> = "create"
   }
 }
