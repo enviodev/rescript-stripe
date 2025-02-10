@@ -11,7 +11,8 @@
     "build": "rescript",
     "res": "rescript -w",
     "test": "ava",
-    "sync": "node scripts/Sync.res.mjs"
+    "sync": "node scripts/Sync.res.mjs",
+    "subscribe": "node scripts/Subscribe.res.mjs"
   },
   "ava": {
     "files": [
@@ -19,6 +20,7 @@
     ]
   },
   "dependencies": {
+    "rescript-schema": "^9.1.0",
     "stripe": "^17.6.0"
   },
   "devDependencies": {

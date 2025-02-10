@@ -3,8 +3,10 @@
 import * as Js_exn from "rescript/lib/es6/js_exn.js";
 import Stripe from "stripe";
 import * as Js_dict from "rescript/lib/es6/js_dict.js";
+import * as Belt_Array from "rescript/lib/es6/belt_Array.js";
 import * as Belt_Option from "rescript/lib/es6/belt_Option.js";
 import * as Caml_option from "rescript/lib/es6/caml_option.js";
+import * as S$RescriptSchema from "rescript-schema/src/S.res.mjs";
 import * as Caml_js_exceptions from "rescript/lib/es6/caml_js_exceptions.js";
 
 function $$catch(promise, callback) {
@@ -186,7 +188,7 @@ async function syncProduct(stripe, productConfig, meters) {
           }
           if (isPriceInSync) {
             console.log("Price \"" + maybePriceConfig.lookupKey + "\" is in sync");
-            return ;
+            return price;
           }
           console.log("Price \"" + maybePriceConfig.lookupKey + "\" is not in sync. Updating...");
           var match$1 = await Promise.all([
@@ -195,8 +197,9 @@ async function syncProduct(stripe, productConfig, meters) {
                       active: false
                     })
               ]);
-          console.log("Price \"" + maybePriceConfig.lookupKey + "\" successfully recreated with the new values. New Price ID: " + match$1[0].id + ". Old Price ID: " + price.id);
-          return ;
+          var newPrice = match$1[0];
+          console.log("Price \"" + maybePriceConfig.lookupKey + "\" successfully recreated with the new values. New Price ID: " + newPrice.id + ". Old Price ID: " + price.id);
+          return newPrice;
         }
         console.log("Price " + price.id + " with lookupKey " + price.lookup_key + " is not configured on product " + productConfig.lookupKey + ". Setting it to inactive...");
         await stripe.prices.update(price.id, {
@@ -208,8 +211,15 @@ async function syncProduct(stripe, productConfig, meters) {
         console.log("Price \"" + priceConfig.lookupKey + "\" is missing on product \"" + productConfig.lookupKey + "\"\". Creating it...");
         var price = await createPriceFromConfig(priceConfig, undefined);
         console.log("Price \"" + priceConfig.lookupKey + "\" successfully created. Price ID: " + price.id);
+        return price;
       });
-  await Promise.all(priceUpdatePromises.concat(priceCreatePromises));
+  var prices$1 = Belt_Array.keepMap(await Promise.all(priceUpdatePromises.concat(priceCreatePromises)), (function (p) {
+          return p;
+        }));
+  return {
+          product: product,
+          prices: prices$1
+        };
 }
 
 async function sync(stripe, productCatalog) {
@@ -241,10 +251,11 @@ async function sync(stripe, productCatalog) {
   } else {
     meters = undefined;
   }
-  await Promise.all(productCatalog.products.map(function (p) {
+  var products = await Promise.all(productCatalog.products.map(function (p) {
             return syncProduct(stripe, p, meters);
           }));
-  console.log("Successfully finished syncing product catalog");
+  console.log("Successfully finished syncing products");
+  return products;
 }
 
 var ProductCatalog = {
@@ -254,10 +265,267 @@ var ProductCatalog = {
 
 var Customer = {};
 
+function isTerminatedStatus(status) {
+  return false;
+}
+
+var Subscription = {
+  isTerminatedStatus: isTerminatedStatus
+};
+
 var Session = {};
 
 var Checkout = {
   Session: Session
+};
+
+var Tier = {};
+
+var idField = "subscription_id";
+
+var tierField = "subscription_tier";
+
+function validateMetadataSchema(schema) {
+  var match = schema.t;
+  if (typeof match !== "object") {
+    if (match === "string") {
+      return ;
+    } else {
+      return Js_exn.raiseError("Currently only string schemas are supported for data fields");
+    }
+  } else if (match.TAG === "literal" && match._0.kind === "String") {
+    return ;
+  } else {
+    return Js_exn.raiseError("Currently only string schemas are supported for data fields");
+  }
+}
+
+async function createHostedCheckoutSession(stripe, params) {
+  var primaryFields = [idField];
+  var customerLookupFields = [];
+  var dataMetadataFields = [idField];
+  var tierMetadataFields = [tierField];
+  var productsByTier = {};
+  var dataSchema = S$RescriptSchema.object(function (s) {
+        s.tag(idField, params.config.id);
+        return params.config.data({
+                    primary: (function (name, schema, customerLookupOpt) {
+                        var customerLookup = customerLookupOpt !== undefined ? customerLookupOpt : false;
+                        validateMetadataSchema(schema);
+                        primaryFields.push(name);
+                        dataMetadataFields.push(name);
+                        if (customerLookup) {
+                          customerLookupFields.push(name);
+                        }
+                        return s.f(name, schema);
+                      }),
+                    metadata: (function (name, schema) {
+                        validateMetadataSchema(schema);
+                        dataMetadataFields.push(name);
+                        return s.f(name, schema);
+                      })
+                  });
+      });
+  var tierSchema = S$RescriptSchema.union(params.config.tiers.map(function (param) {
+            var tierConfig = param[1];
+            var id = param[0];
+            return S$RescriptSchema.object(function (s) {
+                        var products = [];
+                        var tier = tierConfig({
+                              metadata: (function (name, schema) {
+                                  validateMetadataSchema(schema);
+                                  tierMetadataFields.push(name);
+                                  return s.f(name, schema);
+                                }),
+                              interval: (function () {
+                                  return s.f("~~interval", S$RescriptSchema.$$enum([
+                                                  "day",
+                                                  "week",
+                                                  "month",
+                                                  "year"
+                                                ]));
+                                }),
+                              product: (function (productConfig) {
+                                  products.push(productConfig);
+                                })
+                            });
+                        s.tag(tierField, id);
+                        productsByTier[id] = products;
+                        return tier;
+                      });
+          }));
+  if (customerLookupFields.length === 0) {
+    Js_exn.raiseError("The data schema must define at least one primary field with ~customerLookup=true");
+  }
+  var rawData = S$RescriptSchema.reverseConvertOrThrow(params.data, dataSchema);
+  var rawTier = S$RescriptSchema.reverseConvertOrThrow(params.tier, tierSchema);
+  var tierId = rawTier[tierField];
+  var p = Js_dict.get(productsByTier, tierId);
+  var products = p !== undefined ? (
+      p.length !== 0 ? p : Js_exn.raiseError("Tier \"" + tierId + "\" doesn't have any products configured")
+    ) : Js_exn.raiseError("Tier \"" + tierId + "\" is not configured on the subscription plan");
+  var specificInterval = rawTier["~~interval"];
+  var customerSearchQuery = customerLookupFields.map(function (name) {
+          return "metadata[\"" + name + "\"]:\"" + rawData[name] + "\"";
+        }).join("AND");
+  console.log("Searching for an existing customer with query: " + customerSearchQuery);
+  var match = await stripe.customers.search({
+        query: customerSearchQuery,
+        limit: 2
+      });
+  var match$1 = match.data;
+  var len = match$1.length;
+  var customer;
+  if (len !== 1) {
+    if (len !== 0) {
+      customer = Js_exn.raiseError("Found multiple customers for the search query: " + customerSearchQuery);
+    } else {
+      console.log("No customer found. Creating a new one...");
+      var c = await stripe.customers.create({
+            metadata: Js_dict.fromArray(customerLookupFields.map(function (name) {
+                      return [
+                              name,
+                              rawData[name]
+                            ];
+                    }))
+          });
+      console.log("Successfully created a new customer with id: " + c.id);
+      customer = c;
+    }
+  } else {
+    var c$1 = match$1[0];
+    console.log("Successfully found customer with id: " + c$1.id);
+    customer = c$1;
+  }
+  console.log("Searching for an existing \"" + params.config.id + "\" subscription...");
+  var match$2 = await stripe.subscriptions.list({
+        customer: customer.id,
+        status: "active",
+        limit: 100
+      });
+  if (match$2.has_more) {
+    Js_exn.raiseError("Customers has more than 100 subscriptions, which is not supported yet");
+  } else {
+    var subscriptions = match$2.data;
+    console.log("Found " + subscriptions.length.toString() + " subscriptions for the customer. Validating that the new subscription is not already active...");
+    var maybeExistingSubscription = subscriptions.find(function (subscription) {
+          if (primaryFields.every(function (name) {
+                  return subscription.metadata[name] === rawData[name];
+                })) {
+            console.log("Found an existing subscription. Subscription ID: " + subscription.id);
+            return true;
+          } else {
+            return false;
+          }
+        });
+    if (maybeExistingSubscription !== undefined) {
+      Js_exn.raiseError("There's already an active \"" + maybeExistingSubscription.id + "\" subscription for " + primaryFields.map(function (name) {
+                  return name + "=" + rawData[name];
+                }).join(", ") + " with the \"" + tierId + "\" tier. Either update the existing subscription or cancel it and create a new one");
+    } else {
+      console.log("Customer doesn't have an active \"" + params.config.id + "\" subscription");
+    }
+  }
+  var productItems = await sync(stripe, {
+        products: products
+      });
+  console.log("Creating a new checkout session for subscription \"" + params.config.id + "\" tier \"" + tierId + "\"...");
+  var match$3 = params.config.termsOfServiceConsent;
+  var session = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        success_url: params.successUrl,
+        cancel_url: params.cancelUrl,
+        consent_collection: match$3 !== undefined && match$3 ? ({
+              terms_of_service: "required"
+            }) : undefined,
+        subscription_data: {
+          description: params.description,
+          metadata: Js_dict.fromArray(dataMetadataFields.map(function (name) {
+                      return [
+                              name,
+                              rawData[name]
+                            ];
+                    }).concat(tierMetadataFields.map(function (name) {
+                        return [
+                                name,
+                                rawTier[name]
+                              ];
+                      }))),
+          billing_cycle_anchor: params.billingCycleAnchor
+        },
+        allow_promotion_codes: params.allowPromotionCodes,
+        customer: customer.id,
+        line_items: productItems.map(function (param) {
+              var prices = param.prices;
+              var product = param.product;
+              var lineItemPrice;
+              var exit = 0;
+              var len = prices.length;
+              if (len !== 1) {
+                if (len !== 0) {
+                  exit = 1;
+                } else {
+                  lineItemPrice = Js_exn.raiseError("Product \"" + product.name + "\" doesn't have any prices");
+                }
+              } else {
+                var price = prices[0];
+                if (specificInterval !== undefined) {
+                  exit = 1;
+                } else {
+                  lineItemPrice = price;
+                }
+              }
+              if (exit === 1) {
+                if (specificInterval !== undefined) {
+                  var p = Belt_Array.reduce(prices, undefined, (function (acc, price) {
+                          var match = price.recurring;
+                          var isValid;
+                          isValid = match === null ? true : match.interval === specificInterval;
+                          if (acc !== undefined) {
+                            if (isValid) {
+                              return Js_exn.raiseError("Product \"" + product.name + "\" has multiple prices for the \"" + specificInterval + "\" interval billing");
+                            } else {
+                              return acc;
+                            }
+                          } else if (isValid) {
+                            return price;
+                          } else {
+                            return acc;
+                          }
+                        }));
+                  lineItemPrice = p !== undefined ? p : Js_exn.raiseError("Product \"" + product.name + "\" doesn't have a price for the \"" + specificInterval + "\" interval billing");
+                } else {
+                  lineItemPrice = Js_exn.raiseError("Product \"" + product.name + "\" have multiple prices but no interval specified. Use \"s.interval\" to dynamically choose which price use for the tier");
+                }
+              }
+              var match = lineItemPrice.recurring;
+              var id = lineItemPrice.id;
+              if (match === null) {
+                return {
+                        price: id,
+                        quantity: 1
+                      };
+              }
+              var tmp = match.meter;
+              if (tmp === null) {
+                return {
+                        price: id,
+                        quantity: 1
+                      };
+              } else {
+                return {
+                        price: id
+                      };
+              }
+            })
+      });
+  console.log("Successfully created a new checkout session");
+  console.log(session);
+}
+
+var TieredSubscription = {
+  Tier: Tier,
+  createHostedCheckoutSession: createHostedCheckoutSession
 };
 
 export {
@@ -268,6 +536,8 @@ export {
   Product ,
   ProductCatalog ,
   Customer ,
+  Subscription ,
   Checkout ,
+  TieredSubscription ,
 }
 /* stripe Not a pure module */
