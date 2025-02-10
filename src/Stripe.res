@@ -271,19 +271,19 @@ module Product = {
 
 module ProductCatalog = {
   type recurringConfig =
-    | Metered({interval: Price.interval})
+    | Metered({interval: Price.interval, ref: string})
     | Licensed({interval: Price.interval})
 
   type priceConfig = {
     currency: currency,
-    lookupKey: string,
+    lookupKey?: string,
     unitAmountInCents: int,
     recurring: recurringConfig,
   }
 
   type productConfig = {
     name: string,
-    lookupKey: string,
+    ref: string,
     prices: array<priceConfig>,
     unitLabel?: string,
   }
@@ -300,50 +300,23 @@ module ProductCatalog = {
     productConfig: productConfig,
     ~meters: option<dict<Meter.t>>=?,
   ) => {
-    let unsyncedPriceConfigs = Js.Dict.empty()
-
-    for idx in 0 to productConfig.prices->Js.Array2.length - 1 {
-      let priceConfig = productConfig.prices->Js.Array2.unsafe_get(idx)
-      unsyncedPriceConfigs->Js.Dict.set(priceConfig.lookupKey, priceConfig)
-      switch priceConfig.recurring {
-      | Licensed(_) => ()
-      | Metered(_) =>
-        switch meters {
-        | None =>
-          Js.Exn.raiseError(
-            `Product "${productConfig.name}" has a mettered price. It's required to provide a map of metters to perform the sync`,
-          )
-        | Some(_) => ()
-        }
-      }
-    }
-
-    if (
-      unsyncedPriceConfigs->Js.Dict.keys->Js.Array2.length !==
-        productConfig.prices->Js.Array2.length
-    ) {
-      Js.Exn.raiseError(
-        `Product '${productConfig.name}' has price configurations with duplicated lookup keys. It's allowed to have only unique lookup keys.`,
-      )
-    }
-
-    Js.log(`Searching for active product "${productConfig.lookupKey}"...`)
+    Js.log(`Searching for active product "${productConfig.ref}"...`)
     let product = switch await stripe->Product.search({
-      query: `active:"true" AND metadata["lookup_key"]:"${productConfig.lookupKey}"`,
+      query: `active:"true" AND metadata["product_ref"]:"${productConfig.ref}"`,
       limit: 2,
     }) {
     | {data: []} => {
-        Js.log(`No active product "${productConfig.lookupKey}" found. Creating a new one...`)
+        Js.log(`No active product "${productConfig.ref}" found. Creating a new one...`)
         let p = await stripe->Product.create({
           name: productConfig.name,
           unitLabel: ?productConfig.unitLabel,
-          metadata: Js.Dict.fromArray([("lookup_key", productConfig.lookupKey)]),
+          metadata: Js.Dict.fromArray([("product_ref", productConfig.ref)]),
         })
-        Js.log(`Product "${productConfig.lookupKey}" successfully created. Product ID: ${p.id}`)
+        Js.log(`Product "${productConfig.ref}" successfully created. Product ID: ${p.id}`)
         p
       }
     | {data: [p]} => {
-        Js.log(`Found an existing product "${productConfig.lookupKey}". Product ID: ${p.id}`)
+        Js.log(`Found an existing product "${productConfig.ref}". Product ID: ${p.id}`)
 
         let fieldsToSync: Product.updateParams = {}
 
@@ -358,34 +331,34 @@ module ProductCatalog = {
 
         if fieldNamesToSync->Js.Array2.length > 0 {
           Js.log(
-            `Syncing product "${productConfig.lookupKey}" fields ${fieldNamesToSync->Js.Array2.joinWith(
+            `Syncing product "${productConfig.ref}" fields ${fieldNamesToSync->Js.Array2.joinWith(
                 ", ",
               )}...`,
           )
           let p = await stripe->Product.update(p.id, fieldsToSync)
-          Js.log(`Product "${productConfig.lookupKey}" fields successfully updated`)
+          Js.log(`Product "${productConfig.ref}" fields successfully updated`)
           p
         } else {
-          Js.log(`Product "${productConfig.lookupKey}" is in sync`)
+          Js.log(`Product "${productConfig.ref}" is in sync`)
           p
         }
       }
     | {data: _} =>
       Js.Exn.raiseError(
-        `There are multiple active products "${productConfig.lookupKey}". Please go to dashboard and delete not needed ones (https://dashboard.stripe.com/test/products?active=true)`,
+        `There are multiple active products "${productConfig.ref}". Please go to dashboard and delete not needed ones (https://dashboard.stripe.com/test/products?active=true)`,
       )
     }
 
-    Js.log(`Searching for product "${productConfig.lookupKey}" active prices...`)
+    Js.log(`Searching for product "${productConfig.ref}" active prices...`)
     let prices = await stripe->Price.list({product: product.id, active: true})
     Js.log(
       `Found ${prices.data
         ->Js.Array2.length
-        ->Js.Int.toString} product "${productConfig.lookupKey}" active prices`,
+        ->Js.Int.toString} product "${productConfig.ref}" active prices`,
     )
     if prices.hasMore {
       Js.Exn.raiseError(
-        `The pagination on prices is not supported yet. Product "${productConfig.lookupKey}" has to many active prices`,
+        `The pagination on prices is not supported yet. Product "${productConfig.ref}" has to many active prices`,
       )
     }
 
@@ -394,22 +367,32 @@ module ProductCatalog = {
         currency: priceConfig.currency,
         product: product.id,
         unitAmountInCents: priceConfig.unitAmountInCents,
-        lookupKey: priceConfig.lookupKey,
+        lookupKey: ?priceConfig.lookupKey,
+        metadata: ?switch priceConfig.recurring {
+        | Licensed(_) => None
+        // TODO: Also save meter_event_name
+        | Metered({ref}) => Some(Js.Dict.fromArray([("#meter_ref", ref)]))
+        },
         recurring: switch priceConfig.recurring {
         | Licensed({interval}) => {interval: interval}
-        | Metered({interval}) => {
-            let meter = switch meters->Belt.Option.getExn->Js.Dict.get(priceConfig.lookupKey) {
+        | Metered({interval, ref}) => {
+            let meters = switch meters {
+            | Some(m) => m
+            | None =>
+              Js.Exn.raiseError(`The Meters hash map argument is required when you defined metered prices`)
+            }
+            let meter = switch meters->Js.Dict.get(ref) {
             | Some(meter) => meter
             | None =>
-              Js.log(`Meter "${priceConfig.lookupKey}" does not exist. Creating...`)
+              Js.log(`Meter "${ref}" does not exist. Creating...`)
               let meter = await stripe->Meter.create({
-                displayName: priceConfig.lookupKey,
-                eventName: priceConfig.lookupKey,
+                displayName: ref,
+                eventName: ref,
                 defaultAggregation: {
                   formula: Sum,
                 },
               })
-              Js.log(`Meter "${priceConfig.lookupKey}" successfully created. Meter ID: ${meter.id}`)
+              Js.log(`Meter "${ref}" successfully created. Meter ID: ${meter.id}`)
               meter
             }
 
@@ -424,77 +407,51 @@ module ProductCatalog = {
       })
     }
 
-    let priceUpdatePromises = prices.data->Js.Array2.map(async price => {
-      let maybePriceConfig = switch price.lookupKey {
-      | Value(lookupKey) => unsyncedPriceConfigs->Js.Dict.get(lookupKey)
-      | Null => None
-      }
-      switch maybePriceConfig {
-      | Some(priceConfig) =>
-        unsyncedPriceConfigs->Stdlib.Dict.unsafeDeleteKey(priceConfig.lookupKey)
-        Js.log(`Found an existing price "${priceConfig.lookupKey}". Price ID: ${price.id}`)
-        let isPriceInSync =
-          priceConfig.currency === price.currency &&
-          Js.Null.Value(priceConfig.unitAmountInCents) === price.unitAmountInCents &&
-          switch price.recurring {
-          | Null => false
-          | Value(priceRecurring) =>
-            switch priceConfig.recurring {
-            | Licensed({interval}) =>
-              priceRecurring.usageType === Licensed &&
-              priceRecurring.interval === interval &&
-              priceRecurring.meter === Null
-            | Metered({interval}) =>
-              priceRecurring.usageType === Metered &&
-              priceRecurring.interval === interval &&
-              priceRecurring.meter->Js.Null.toOption ===
-                meters
-                ->Belt.Option.getExn
-                ->Js.Dict.get(priceConfig.lookupKey)
-                ->Belt.Option.map(m => m.id)
-            }
-          }
-        if isPriceInSync {
-          Js.log(`Price "${priceConfig.lookupKey}" is in sync`)
-          Some(price)
-        } else {
-          Js.log(`Price "${priceConfig.lookupKey}" is not in sync. Updating...`)
-          let (newPrice, _) = await Stdlib.Promise.all2((
-            createPriceFromConfig(priceConfig, ~transferLookupKey=true),
-            stripe->Price.update(price.id, {active: false}),
-          ))
-          Js.log(
-            `Price "${priceConfig.lookupKey}" successfully recreated with the new values. New Price ID: ${newPrice.id}. Old Price ID: ${price.id}`,
-          )
-          Some(newPrice)
-        }
-      | None => {
-          Js.log(
-            `Price ${price.id} with lookupKey ${price.lookupKey->Obj.magic} is not configured on product ${productConfig.lookupKey}. Setting it to inactive...`,
-          )
-          let _ = await stripe->Price.update(price.id, {active: false})
-          Js.log(`Price ${price.id} successfully set to inactive`)
-          None
-        }
-      }
-    })
-
-    let priceCreatePromises =
-      unsyncedPriceConfigs
-      ->Js.Dict.values
-      ->Js.Array2.map(async priceConfig => {
-        Js.log(
-          `Price "${priceConfig.lookupKey}" is missing on product "${productConfig.lookupKey}"". Creating it...`,
-        )
-        let price = await createPriceFromConfig(priceConfig)
-        Js.log(`Price "${priceConfig.lookupKey}" successfully created. Price ID: ${price.id}`)
-        Some(price)
-      })
-
     let prices =
-      (
-        await Stdlib.Promise.all(priceUpdatePromises->Js.Array2.concat(priceCreatePromises))
-      )->Belt.Array.keepMap(p => p)
+      await productConfig.prices
+      ->Js.Array2.map(async priceConfig => {
+        let existingPrice = prices.data->Js.Array2.find(price => {
+          let isPriceInSync =
+            priceConfig.currency === price.currency &&
+            priceConfig.lookupKey === price.lookupKey->Js.Null.toOption &&
+            Js.Null.Value(priceConfig.unitAmountInCents) === price.unitAmountInCents &&
+            switch price.recurring {
+            | Null => false
+            | Value(priceRecurring) =>
+              switch priceConfig.recurring {
+              | Licensed({interval}) =>
+                priceRecurring.usageType === Licensed &&
+                priceRecurring.interval === interval &&
+                priceRecurring.meter === Null
+              | Metered({interval, ref}) =>
+                priceRecurring.usageType === Metered &&
+                priceRecurring.interval === interval &&
+                priceRecurring.meter->Js.Null.toOption->Js.Option.isSome &&
+                price.metadata->Js.Dict.unsafeGet("#meter_ref") === ref
+              }
+            }
+          isPriceInSync
+        })
+        switch existingPrice {
+        | Some(price) => {
+            Js.log(
+              `Found an existing price "${priceConfig.lookupKey->Belt.Option.getWithDefault(
+                  "-",
+                )}" for product "${productConfig.ref}". Price ID: ${price.id}`,
+            )
+            price
+          }
+        | None => {
+            Js.log(`A price for product "${productConfig.ref}" is not in sync. Updating...`)
+            let price = await createPriceFromConfig(priceConfig, ~transferLookupKey=true)
+            Js.log(
+              `Price for product "${productConfig.ref}" successfully recreated with the new values. Price ID: ${price.id}`,
+            )
+            price
+          }
+        }
+      })
+      ->Stdlib.Promise.all
 
     {
       product,
@@ -568,10 +525,25 @@ module Subscription = {
     | @as("unpaid") Unpaid
     | @as("incomplete_expired") IncompleteExpired
     | @as("paused") Paused
+
+  type itemPrice = {
+    ...Price.t,
+  }
+  type item = {
+    id: string,
+    object: string,
+    @as("billing_thresholds")
+    billingThresholds: Js.Null.t<unknown>,
+    metadata: dict<string>,
+    created: int,
+    subscription: string,
+    price: itemPrice,
+  }
   type t = {
     id: string,
     metadata: dict<string>,
     status: status,
+    items: page<item>,
   }
 
   type listParams = {
@@ -594,6 +566,15 @@ module Subscription = {
     | IncompleteExpired
     | Paused => false
     }
+  }
+
+  let getMeterId = (subscription, ~meterRef) => {
+    subscription.items.data
+    ->Js.Array2.find(item => {
+      item.price.metadata->Js.Dict.unsafeGet("#meter_ref") === meterRef
+    })
+    ->Belt.Option.flatMap(i => i.price.recurring->Js.Null.toOption)
+    ->Belt.Option.flatMap(r => r.meter->Js.Null.toOption)
   }
 }
 
@@ -660,26 +641,16 @@ module TieredSubscription = {
   }
 
   type t<'data, 'tier> = {
-    id: string,
+    ref: string,
     data: s => 'data,
     tiers: array<(string, Tier.s => 'tier)>,
     termsOfServiceConsent?: bool,
   }
 
-  type hostedCheckoutSessionParams<'data, 'tier> = {
-    config: t<'data, 'tier>,
-    successUrl: string,
-    cancelUrl?: string,
-    billingCycleAnchor?: int,
-    data: 'data,
-    tier: 'tier,
-    description?: string,
-    allowPromotionCodes?: bool,
-  }
-  let createHostedCheckoutSession = {
-    let idField = "subscription_id"
-    let tierField = "subscription_tier"
+  let refField = "#subscription_ref"
+  let tierField = "#subscription_tier"
 
+  %%private(
     let validateMetadataSchema = schema => {
       switch schema->S.classify {
       | String
@@ -688,19 +659,17 @@ module TieredSubscription = {
       }
     }
 
-    async (stripe, params) => {
-      let primaryFields = [idField]
+    let processData = (data, ~config) => {
+      let primaryFields = [refField]
       let customerLookupFields = []
-      let dataMetadataFields = [idField]
-      let tierMetadataFields = [tierField]
-      let productsByTier = Js.Dict.empty()
-      let dataSchema = S.object(s => {
-        s.tag(idField, params.config.id)
-        params.config.data({
+      let metadataFields = [refField]
+      let schema = S.object(s => {
+        s.tag(refField, config.ref)
+        config.data({
           primary: (name, schema, ~customerLookup=false) => {
             validateMetadataSchema(schema)
             primaryFields->Js.Array2.push(name)->ignore
-            dataMetadataFields->Js.Array2.push(name)->ignore
+            metadataFields->Js.Array2.push(name)->ignore
             if customerLookup {
               customerLookupFields->Js.Array2.push(name)->ignore
             }
@@ -708,83 +677,59 @@ module TieredSubscription = {
           },
           metadata: (name, schema) => {
             validateMetadataSchema(schema)
-            dataMetadataFields->Js.Array2.push(name)->ignore
+            metadataFields->Js.Array2.push(name)->ignore
             s.field(name, schema)
           },
         })
       })
-      let tierSchema = S.union(
-        params.config.tiers->Js.Array2.map(((id, tierConfig)) => {
-          S.object(s => {
-            let products = []
-            let tier = tierConfig({
-              product: productConfig => {
-                products->Js.Array2.push(productConfig)->ignore
-              },
-              interval: () => s.field("~~interval", S.enum([Price.Day, Week, Month, Year])),
-              metadata: (name, schema) => {
-                validateMetadataSchema(schema)
-                tierMetadataFields->Js.Array2.push(name)->ignore
-                s.field(name, schema)
-              },
-            })
-            s.tag(tierField, id)
-            productsByTier->Js.Dict.set(id, products)
-            tier
-          })
-        }),
-      )
+
       if customerLookupFields->Js.Array2.length === 0 {
         Js.Exn.raiseError(
           "The data schema must define at least one primary field with ~customerLookup=true",
         )
       }
-      let rawData: dict<string> = params.data->S.reverseConvertOrThrow(dataSchema)->Obj.magic
-      let rawTier: dict<string> = params.tier->S.reverseConvertOrThrow(tierSchema)->Obj.magic
-
-      let tierId = rawTier->Js.Dict.unsafeGet(tierField)
-      let products = switch productsByTier->Js.Dict.get(tierId) {
-      | Some([]) => Js.Exn.raiseError(`Tier "${tierId}" doesn't have any products configured`)
-      | Some(p) => p
-      | None => Js.Exn.raiseError(`Tier "${tierId}" is not configured on the subscription plan`)
+      let dict: dict<string> = data->S.reverseConvertOrThrow(schema)->Obj.magic
+      {
+        "value": data,
+        "dict": dict,
+        "schema": schema,
+        "primaryFields": primaryFields,
+        "customerLookupFields": customerLookupFields,
+        "metadataFields": metadataFields,
       }
-      let specificInterval: option<Price.interval> =
-        rawTier->Js.Dict.unsafeGet("~~interval")->Obj.magic
+    }
 
+    let internalRetrieveCustomer = async (stripe, data) => {
       let customerSearchQuery =
-        customerLookupFields
+        data["customerLookupFields"]
         ->Js.Array2.map(name => {
-          `metadata["${name}"]:"${rawData->Js.Dict.unsafeGet(name)}"`
+          `metadata["${name}"]:"${data["dict"]->Js.Dict.unsafeGet(name)}"`
         })
         ->Js.Array2.joinWith("AND")
       Js.log(`Searching for an existing customer with query: ${customerSearchQuery}`)
-      let customer = switch await stripe->Customer.search({
+      switch await stripe->Customer.search({
         query: customerSearchQuery,
         limit: 2,
       }) {
       | {data: [c]} => {
           Js.log(`Successfully found customer with id: ${c.id}`)
-          c
+          Some(c)
         }
       | {data: []} =>
-        Js.log(`No customer found. Creating a new one...`)
-        let c = await Customer.create(
-          stripe,
-          {
-            metadata: customerLookupFields
-            ->Js.Array2.map(name => {
-              (name, rawData->Js.Dict.unsafeGet(name))
-            })
-            ->Js.Dict.fromArray,
-          },
-        )
-        Js.log(`Successfully created a new customer with id: ${c.id}`)
-        c
+        Js.log(`No customer found`)
+        None
       | {data: _} =>
         Js.Exn.raiseError(`Found multiple customers for the search query: ${customerSearchQuery}`)
       }
+    }
 
-      Js.log(`Searching for an existing "${params.config.id}" subscription...`)
+    let internalRetrieveSubscription = async (
+      stripe,
+      data,
+      ~subecriptionRef,
+      ~customer: Customer.t,
+    ) => {
+      Js.log(`Searching for an existing "${subecriptionRef}" subscription...`)
       switch await stripe->Subscription.list({
         customer: customer.id,
         limit: 100,
@@ -798,10 +743,11 @@ module TieredSubscription = {
             ->Js.Array2.length
             ->Js.Int.toString} subscriptions for the customer. Validating that the new subscription is not already active...`,
         )
-        let maybeExistingSubscription = subscriptions->Js.Array2.find(subscription => {
+        subscriptions->Js.Array2.find(subscription => {
           if (
-            primaryFields->Js.Array2.every(name => {
-              subscription.metadata->Js.Dict.unsafeGet(name) === rawData->Js.Dict.unsafeGet(name)
+            data["primaryFields"]->Js.Array2.every(name => {
+              subscription.metadata->Js.Dict.unsafeGet(name) ===
+                data["dict"]->Js.Dict.unsafeGet(name)
             })
           ) {
             Js.log(`Found an existing subscription. Subscription ID: ${subscription.id}`)
@@ -817,90 +763,183 @@ module TieredSubscription = {
             false
           }
         })
-        switch maybeExistingSubscription {
-        | None => Js.log(`Customer doesn't have an active "${params.config.id}" subscription`)
-        | Some(subscription) =>
-          Js.Exn.raiseError(
-            `There's already an active "${subscription.id}" subscription for ${primaryFields
-              ->Js.Array2.map(name => `${name}=${rawData->Js.Dict.unsafeGet(name)}`)
-              ->Js.Array2.joinWith(
-                ", ",
-              )} with the "${tierId}" tier. Either update the existing subscription or cancel it and create a new one`,
-          )
-        }
       }
-
-      let productItems = await stripe->ProductCatalog.sync({ProductCatalog.products: products})
-
-      Js.log(
-        `Creating a new checkout session for subscription "${params.config.id}" tier "${tierId}"...`,
-      )
-      let session = await stripe->Checkout.Session.create({
-        mode: Checkout.Session.Subscription,
-        customer: customer.id,
-        consentCollection: ?switch params.config.termsOfServiceConsent {
-        | Some(true) => Some({Checkout.Session.termsOfService: Required})
-        | _ => None
-        },
-        subscriptionData: {
-          description: ?params.description,
-          billingCycleAnchor: ?params.billingCycleAnchor,
-          metadata: dataMetadataFields
-          ->Js.Array2.map(name => (name, rawData->Js.Dict.unsafeGet(name)))
-          ->Js.Array2.concat(
-            tierMetadataFields->Js.Array2.map(name => (name, rawTier->Js.Dict.unsafeGet(name))),
-          )
-          ->Js.Dict.fromArray,
-        },
-        allowPromotionCodes: ?params.allowPromotionCodes,
-        successUrl: params.successUrl,
-        cancelUrl: ?params.cancelUrl,
-        lineItems: productItems->Js.Array2.map(({
-          prices,
-          product,
-        }): Checkout.Session.lineItemParam => {
-          let lineItemPrice = switch (prices, specificInterval) {
-          | ([], _) => Js.Exn.raiseError(`Product "${product.name}" doesn't have any prices`)
-          | ([price], None) => price
-          | (_, None) =>
-            Js.Exn.raiseError(
-              `Product "${product.name}" have multiple prices but no interval specified. Use "s.interval" to dynamically choose which price use for the tier`,
-            )
-          | (prices, Some(specificInterval)) =>
-            switch prices->Belt.Array.reduce(None, (acc, price) => {
-              let isValid = switch price {
-              | {recurring: Null} => true
-              | {recurring: Value({interval})} => interval === specificInterval
-              }
-              switch (acc, isValid) {
-              | (None, true) => Some(price)
-              | (Some(_), true) =>
-                Js.Exn.raiseError(
-                  `Product "${product.name}" has multiple prices for the "${(specificInterval :> string)}" interval billing`,
-                )
-              | (_, false) => acc
-              }
-            }) {
-            | None =>
-              Js.Exn.raiseError(
-                `Product "${product.name}" doesn't have a price for the "${(specificInterval :> string)}" interval billing`,
-              )
-            | Some(p) => p
-            }
-          }
-          switch lineItemPrice {
-          | {recurring: Value({meter: Value(_)}), id} => {
-              price: id,
-            }
-          | {id} => {
-              price: id,
-              quantity: 1,
-            }
-          }
-        }),
-      })
-      Js.log("Successfully created a new checkout session")
-      Js.log(session)
     }
+  )
+
+  let retrieveCustomer = (stripe, ~config, data) => {
+    internalRetrieveCustomer(stripe, processData(data, ~config))
+  }
+
+  let retrieveSubscription = async (stripe, ~config, data) => {
+    let processedData = processData(data, ~config)
+    switch await internalRetrieveCustomer(stripe, processedData) {
+    | Some(customer) =>
+      await internalRetrieveSubscription(
+        stripe,
+        processedData,
+        ~customer,
+        ~subecriptionRef=config.ref,
+      )
+    | None => None
+    }
+  }
+
+  type hostedCheckoutSessionParams<'data, 'tier> = {
+    config: t<'data, 'tier>,
+    successUrl: string,
+    cancelUrl?: string,
+    billingCycleAnchor?: int,
+    data: 'data,
+    tier: 'tier,
+    description?: string,
+    allowPromotionCodes?: bool,
+  }
+
+  let createHostedCheckoutSession = async (stripe, params) => {
+    let data = processData(params.data, ~config=params.config)
+
+    let tierMetadataFields = [tierField]
+    let productsByTier = Js.Dict.empty()
+
+    let tierSchema = S.union(
+      params.config.tiers->Js.Array2.map(((id, tierConfig)) => {
+        S.object(s => {
+          let products = []
+          let tier = tierConfig({
+            product: productConfig => {
+              products->Js.Array2.push(productConfig)->ignore
+            },
+            interval: () => s.field("~~interval", S.enum([Price.Day, Week, Month, Year])),
+            metadata: (name, schema) => {
+              validateMetadataSchema(schema)
+              tierMetadataFields->Js.Array2.push(name)->ignore
+              s.field(name, schema)
+            },
+          })
+          s.tag(tierField, id)
+          productsByTier->Js.Dict.set(id, products)
+          tier
+        })
+      }),
+    )
+    let rawTier: dict<string> = params.tier->S.reverseConvertOrThrow(tierSchema)->Obj.magic
+
+    let tierId = rawTier->Js.Dict.unsafeGet(tierField)
+    let products = switch productsByTier->Js.Dict.get(tierId) {
+    | Some([]) => Js.Exn.raiseError(`Tier "${tierId}" doesn't have any products configured`)
+    | Some(p) => p
+    | None => Js.Exn.raiseError(`Tier "${tierId}" is not configured on the subscription plan`)
+    }
+    let specificInterval: option<Price.interval> =
+      rawTier->Js.Dict.unsafeGet("~~interval")->Obj.magic
+
+    let customer = switch await stripe->internalRetrieveCustomer(data) {
+    | Some(c) => c
+    | None => {
+        Js.log(`Creating a new customer...`)
+        let c = await Customer.create(
+          stripe,
+          {
+            metadata: data["customerLookupFields"]
+            ->Js.Array2.map(name => {
+              (name, data["dict"]->Js.Dict.unsafeGet(name))
+            })
+            ->Js.Dict.fromArray,
+          },
+        )
+        Js.log(`Successfully created a new customer with id: ${c.id}`)
+        c
+      }
+    }
+
+    switch await internalRetrieveSubscription(
+      stripe,
+      data,
+      ~customer,
+      ~subecriptionRef=params.config.ref,
+    ) {
+    | None => Js.log(`Customer doesn't have an active "${params.config.ref}" subscription`)
+    | Some(subscription) =>
+      Js.Exn.raiseError(
+        `There's already an active "${subscription.id}" subscription for ${data["primaryFields"]
+          ->Js.Array2.map(name => `${name}=${data["dict"]->Js.Dict.unsafeGet(name)}`)
+          ->Js.Array2.joinWith(
+            ", ",
+          )} with the "${tierId}" tier. Either update the existing subscription or cancel it and create a new one`,
+      )
+    }
+
+    let productItems = await stripe->ProductCatalog.sync({ProductCatalog.products: products})
+
+    Js.log(
+      `Creating a new checkout session for subscription "${params.config.ref}" tier "${tierId}"...`,
+    )
+    let session = await stripe->Checkout.Session.create({
+      mode: Checkout.Session.Subscription,
+      customer: customer.id,
+      consentCollection: ?switch params.config.termsOfServiceConsent {
+      | Some(true) => Some({Checkout.Session.termsOfService: Required})
+      | _ => None
+      },
+      subscriptionData: {
+        description: ?params.description,
+        billingCycleAnchor: ?params.billingCycleAnchor,
+        metadata: data["metadataFields"]
+        ->Js.Array2.map(name => (name, data["dict"]->Js.Dict.unsafeGet(name)))
+        ->Js.Array2.concat(
+          tierMetadataFields->Js.Array2.map(name => (name, rawTier->Js.Dict.unsafeGet(name))),
+        )
+        ->Js.Dict.fromArray,
+      },
+      allowPromotionCodes: ?params.allowPromotionCodes,
+      successUrl: params.successUrl,
+      cancelUrl: ?params.cancelUrl,
+      lineItems: productItems->Js.Array2.map(({
+        prices,
+        product,
+      }): Checkout.Session.lineItemParam => {
+        let lineItemPrice = switch (prices, specificInterval) {
+        | ([], _) => Js.Exn.raiseError(`Product "${product.name}" doesn't have any prices`)
+        | ([price], None) => price
+        | (_, None) =>
+          Js.Exn.raiseError(
+            `Product "${product.name}" have multiple prices but no interval specified. Use "s.interval" to dynamically choose which price use for the tier`,
+          )
+        | (prices, Some(specificInterval)) =>
+          switch prices->Belt.Array.reduce(None, (acc, price) => {
+            let isValid = switch price {
+            | {recurring: Null} => true
+            | {recurring: Value({interval})} => interval === specificInterval
+            }
+            switch (acc, isValid) {
+            | (None, true) => Some(price)
+            | (Some(_), true) =>
+              Js.Exn.raiseError(
+                `Product "${product.name}" has multiple prices for the "${(specificInterval :> string)}" interval billing`,
+              )
+            | (_, false) => acc
+            }
+          }) {
+          | None =>
+            Js.Exn.raiseError(
+              `Product "${product.name}" doesn't have a price for the "${(specificInterval :> string)}" interval billing`,
+            )
+          | Some(p) => p
+          }
+        }
+        switch lineItemPrice {
+        | {recurring: Value({meter: Value(_)}), id} => {
+            price: id,
+          }
+        | {id} => {
+            price: id,
+            quantity: 1,
+          }
+        }
+      }),
+    })
+    Js.log(session)
+    Js.log("Successfully created a new checkout session")
   }
 }
