@@ -50,6 +50,8 @@ function make(prim) {
 
 var Meter = {};
 
+var MeterEvent = {};
+
 var Price = {};
 
 var Product = {};
@@ -334,10 +336,41 @@ function getMeterEventName(subscription, meterRef) {
               }));
 }
 
+async function reportMeterUsage(stripe, subscription, meterRef, value, timestamp, identifier) {
+  var meterEventName = getMeterEventName(subscription, meterRef);
+  if (meterEventName !== undefined) {
+    await stripe.billing.meterEvents.create({
+          event_name: meterEventName,
+          payload: Js_dict.fromArray([
+                [
+                  "value",
+                  value.toString()
+                ],
+                [
+                  "stripe_customer_id",
+                  subscription.customer
+                ]
+              ]),
+          identifier: identifier,
+          timestamp: timestamp
+        });
+    return {
+            TAG: "Ok",
+            _0: undefined
+          };
+  } else {
+    return {
+            TAG: "Error",
+            _0: "MeterNotFound"
+          };
+  }
+}
+
 var Subscription = {
   isTerminatedStatus: isTerminatedStatus,
   getMeterId: getMeterId,
-  getMeterEventName: getMeterEventName
+  getMeterEventName: getMeterEventName,
+  reportMeterUsage: reportMeterUsage
 };
 
 var Session = {};
@@ -533,7 +566,7 @@ async function createHostedCheckoutSession(stripe, params) {
   if (subscription !== undefined) {
     Js_exn.raiseError("There's already an active \"" + params.config.ref + "\" subscription for " + data.primaryFields.map(function (name) {
                 return name + "=" + data.dict[name];
-              }).join(", ") + " with the \"" + tierId + "\" tier and id \"" + subscription.id + "\". Either update the existing subscription or cancel it and create a new one");
+              }).join(", ") + " with the \"" + subscription.metadata[tierField] + "\" tier and id \"" + subscription.id + "\". Either update the existing subscription or cancel it and create a new one");
   } else {
     console.log("Customer doesn't have an active \"" + params.config.ref + "\" subscription");
   }
@@ -617,6 +650,7 @@ export {
   Stdlib ,
   make ,
   Meter ,
+  MeterEvent ,
   Price ,
   Product ,
   ProductCatalog ,

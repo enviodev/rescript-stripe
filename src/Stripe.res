@@ -178,6 +178,19 @@ module Meter = {
   external list: (stripe, listParams) => promise<page<t>> = "list"
 }
 
+module MeterEvent = {
+  type t
+  type createParams = {
+    @as("event_name")
+    eventName: string,
+    payload: dict<string>,
+    identifier?: string,
+    timestamp?: int,
+  }
+  @scope(("billing", "meterEvents")) @send
+  external create: (stripe, createParams) => promise<t> = "create"
+}
+
 module Price = {
   type interval =
     | @as("day") Day
@@ -647,6 +660,7 @@ module Subscription = {
     id: string,
     metadata: dict<string>,
     status: status,
+    customer: string,
     items: page<item>,
   }
 
@@ -687,6 +701,30 @@ module Subscription = {
       item.price.metadata->Js.Dict.unsafeGet("#meter_ref") === meterRef
     })
     ->Belt.Option.flatMap(i => i.price.metadata->Js.Dict.get("#meter_event_name"))
+  }
+
+  let reportMeterUsage = async (
+    stripe,
+    subscription,
+    ~meterRef,
+    ~value,
+    ~timestamp=?,
+    ~identifier=?,
+  ) => {
+    switch getMeterEventName(subscription, ~meterRef) {
+    | Some(meterEventName) =>
+      let _ = await stripe->MeterEvent.create({
+        eventName: meterEventName,
+        payload: Js.Dict.fromArray([
+          ("value", value->Js.Int.toString),
+          ("stripe_customer_id", subscription.customer),
+        ]),
+        ?timestamp,
+        ?identifier,
+      })
+      Ok()
+    | None => Error(#MeterNotFound)
+    }
   }
 }
 
@@ -990,9 +1028,9 @@ module TieredSubscription = {
       Js.Exn.raiseError(
         `There's already an active "${params.config.ref}" subscription for ${data["primaryFields"]
           ->Js.Array2.map(name => `${name}=${data["dict"]->Js.Dict.unsafeGet(name)}`)
-          ->Js.Array2.joinWith(
-            ", ",
-          )} with the "${tierId}" tier and id "${subscription.id}". Either update the existing subscription or cancel it and create a new one`,
+          ->Js.Array2.joinWith(", ")} with the "${subscription.metadata->Js.Dict.unsafeGet(
+            tierField,
+          )}" tier and id "${subscription.id}". Either update the existing subscription or cancel it and create a new one`,
       )
     }
 
