@@ -54,7 +54,7 @@ var Price = {};
 
 var Product = {};
 
-async function syncProduct(stripe, productConfig, meters, usedCustomerMeters) {
+async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, interval) {
   console.log("Searching for active product \"" + productConfig.ref + "\"...");
   var match = await stripe.products.search({
         query: "active:\"true\" AND metadata[\"#product_ref\"]:\"" + productConfig.ref + "\"",
@@ -203,7 +203,14 @@ async function syncProduct(stripe, productConfig, meters, usedCustomerMeters) {
                 transfer_lookup_key: transferLookupKey
               });
   };
-  var prices$1 = await Promise.all(productConfig.prices.map(async function (priceConfig) {
+  var prices$1 = await Promise.all(productConfig.prices.filter(function (priceConfig) {
+              var match = priceConfig.recurring;
+              if (interval !== undefined) {
+                return match.interval === interval;
+              } else {
+                return true;
+              }
+            }).map(async function (priceConfig) {
             var existingPrice = prices.data.find(function (price) {
                   var tmp = false;
                   if (priceConfig.currency === price.currency) {
@@ -262,7 +269,7 @@ async function syncProduct(stripe, productConfig, meters, usedCustomerMeters) {
         };
 }
 
-async function sync(stripe, productCatalog, usedCustomerMeters) {
+async function sync(stripe, productCatalog, usedCustomerMeters, interval) {
   var isMeterNeeded = productCatalog.products.some(function (p) {
         return p.prices.some(function (p) {
                     var match = p.recurring;
@@ -292,7 +299,7 @@ async function sync(stripe, productCatalog, usedCustomerMeters) {
     meters = undefined;
   }
   var products = await Promise.all(productCatalog.products.map(function (p) {
-            return syncProduct(stripe, p, meters, usedCustomerMeters);
+            return syncProduct(stripe, p, meters, usedCustomerMeters, interval);
           }));
   console.log("Successfully finished syncing products");
   return products;
@@ -479,42 +486,31 @@ async function retrieveSubscription(stripe, config, data) {
 async function createHostedCheckoutSession(stripe, params) {
   var data = processData(params.data, params.config);
   var tierMetadataFields = [tierField];
-  var productsByTier = {};
   var tierSchema = S$RescriptSchema.union(params.config.tiers.map(function (param) {
             var tierConfig = param[1];
-            var id = param[0];
+            var tierRef = param[0];
             return S$RescriptSchema.object(function (s) {
-                        var products = [];
-                        var tier = tierConfig({
-                              metadata: (function (name, schema) {
-                                  validateMetadataSchema(schema);
-                                  tierMetadataFields.push(name);
-                                  return s.f(name, schema);
-                                }),
-                              interval: (function () {
-                                  return s.f("#interval", S$RescriptSchema.$$enum([
-                                                  "day",
-                                                  "week",
-                                                  "month",
-                                                  "year"
-                                                ]));
-                                }),
-                              product: (function (productConfig) {
-                                  products.push(productConfig);
-                                })
-                            });
-                        s.tag(tierField, id);
-                        productsByTier[id] = products;
-                        return tier;
+                        var matchesCounter = {
+                          contents: -1
+                        };
+                        s.tag(tierField, tierRef);
+                        return tierConfig({
+                                    metadata: (function (name, schema) {
+                                        validateMetadataSchema(schema);
+                                        tierMetadataFields.push(name);
+                                        return s.f(name, schema);
+                                      }),
+                                    matches: (function (schema) {
+                                        matchesCounter.contents = matchesCounter.contents + 1 | 0;
+                                        return s.f("#matches" + matchesCounter.contents.toString(), schema);
+                                      })
+                                  });
                       });
           }));
   var rawTier = S$RescriptSchema.reverseConvertOrThrow(params.tier, tierSchema);
   var tierId = rawTier[tierField];
-  var p = Js_dict.get(productsByTier, tierId);
-  var products = p !== undefined ? (
-      p.length !== 0 ? p : Js_exn.raiseError("Tier \"" + tierId + "\" doesn't have any products configured")
-    ) : Js_exn.raiseError("Tier \"" + tierId + "\" is not configured on the subscription plan");
-  var specificInterval = rawTier["#interval"];
+  var p = params.config.products(params.tier, params.data);
+  var products = p.length !== 0 ? p : Js_exn.raiseError("Tier \"" + tierId + "\" doesn't have any products configured");
   var c = await internalRetrieveCustomer(stripe, data);
   var customer;
   if (c !== undefined) {
@@ -543,7 +539,7 @@ async function createHostedCheckoutSession(stripe, params) {
   }
   var productItems = await sync(stripe, {
         products: products
-      }, Caml_option.some(usedCustomerMeters));
+      }, Caml_option.some(usedCustomerMeters), params.interval);
   console.log("Creating a new checkout session for subscription \"" + params.config.ref + "\" tier \"" + tierId + "\"...");
   var match = params.config.termsOfServiceConsent;
   var session = await stripe.checkout.sessions.create({
@@ -573,55 +569,24 @@ async function createHostedCheckoutSession(stripe, params) {
         line_items: productItems.map(function (param) {
               var prices = param.prices;
               var product = param.product;
-              var lineItemPrice;
-              var exit = 0;
+              var match = params.interval;
               var len = prices.length;
-              if (len !== 1) {
-                if (len !== 0) {
-                  exit = 1;
-                } else {
-                  lineItemPrice = Js_exn.raiseError("Product \"" + product.name + "\" doesn't have any prices");
-                }
-              } else {
-                var price = prices[0];
-                if (specificInterval !== undefined) {
-                  exit = 1;
-                } else {
-                  lineItemPrice = price;
-                }
-              }
-              if (exit === 1) {
-                if (specificInterval !== undefined) {
-                  var p = Belt_Array.reduce(prices, undefined, (function (acc, price) {
-                          var match = price.recurring;
-                          var isValid;
-                          isValid = match === null ? true : match.interval === specificInterval;
-                          if (acc !== undefined) {
-                            if (isValid) {
-                              return Js_exn.raiseError("Product \"" + product.name + "\" has multiple prices for the \"" + specificInterval + "\" interval billing");
-                            } else {
-                              return acc;
-                            }
-                          } else if (isValid) {
-                            return price;
-                          } else {
-                            return acc;
-                          }
-                        }));
-                  lineItemPrice = p !== undefined ? p : Js_exn.raiseError("Product \"" + product.name + "\" doesn't have a price for the \"" + specificInterval + "\" interval billing");
-                } else {
-                  lineItemPrice = Js_exn.raiseError("Product \"" + product.name + "\" have multiple prices but no interval specified. Use \"s.interval\" to dynamically choose which price use for the tier");
-                }
-              }
-              var match = lineItemPrice.recurring;
+              var lineItemPrice = len !== 1 ? (
+                  len !== 0 ? (
+                      match !== undefined ? Js_exn.raiseError("Product \"" + product.name + "\" has multiple prices for interval \"" + match + "\"") : Js_exn.raiseError("Product \"" + product.name + "\" has multiple prices but no interval specified. Use \"interval\" param to dynamically choose which price use for the tier")
+                    ) : (
+                      match !== undefined ? Js_exn.raiseError("Product \"" + product.name + "\" doesn't have prices for interval \"" + match + "\"") : Js_exn.raiseError("Product \"" + product.name + "\" doesn't have any prices")
+                    )
+                ) : prices[0];
+              var match$1 = lineItemPrice.recurring;
               var id = lineItemPrice.id;
-              if (match === null) {
+              if (match$1 === null) {
                 return {
                         price: id,
                         quantity: 1
                       };
               }
-              var tmp = match.meter;
+              var tmp = match$1.meter;
               if (tmp === null) {
                 return {
                         price: id,

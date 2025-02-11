@@ -349,6 +349,7 @@ module ProductCatalog = {
     productConfig: productConfig,
     ~meters: option<dict<Meter.t>>=?,
     ~usedCustomerMeters=?,
+    ~interval: option<Price.interval>=?,
   ) => {
     Js.log(`Searching for active product "${productConfig.ref}"...`)
     let product = switch await stripe->Product.search({
@@ -489,6 +490,14 @@ module ProductCatalog = {
 
     let prices =
       await productConfig.prices
+      ->Js.Array2.filter(priceConfig => {
+        switch (interval, priceConfig.recurring) {
+        | (Some(expectedInterval), Metered({interval}))
+        | (Some(expectedInterval), Licensed({interval})) =>
+          interval === expectedInterval
+        | (None, _) => true
+        }
+      })
       ->Js.Array2.map(async priceConfig => {
         let existingPrice = prices.data->Js.Array2.find(price => {
           let isPriceInSync =
@@ -554,7 +563,7 @@ module ProductCatalog = {
     }
   }
 
-  let sync = async (stripe: stripe, productCatalog: t, ~usedCustomerMeters=?) => {
+  let sync = async (stripe: stripe, productCatalog: t, ~usedCustomerMeters=?, ~interval=?) => {
     let isMeterNeeded = productCatalog.products->Js.Array2.some(p =>
       p.prices->Js.Array2.some(p =>
         switch p.recurring {
@@ -578,7 +587,7 @@ module ProductCatalog = {
 
     let products =
       await productCatalog.products
-      ->Js.Array2.map(p => stripe->syncProduct(p, ~meters?, ~usedCustomerMeters?))
+      ->Js.Array2.map(p => stripe->syncProduct(p, ~meters?, ~usedCustomerMeters?, ~interval?))
       ->Stdlib.Promise.all
     Js.log(`Successfully finished syncing products`)
     products
@@ -733,8 +742,7 @@ module TieredSubscription = {
   module Tier = {
     type s = {
       metadata: 'v. (string, S.t<'v>) => 'v,
-      interval: unit => Price.interval,
-      product: ProductCatalog.productConfig => unit,
+      matches: 'v. S.t<'v> => 'v,
     }
   }
 
@@ -747,6 +755,7 @@ module TieredSubscription = {
     ref: string,
     data: s => 'data,
     tiers: array<(string, Tier.s => 'tier)>,
+    products: (~tier: 'tier, ~data: 'data) => array<ProductCatalog.productConfig>,
     termsOfServiceConsent?: bool,
   }
 
@@ -906,6 +915,7 @@ module TieredSubscription = {
     successUrl: string,
     cancelUrl?: string,
     billingCycleAnchor?: int,
+    interval?: Price.interval,
     data: 'data,
     tier: 'tier,
     description?: string,
@@ -916,25 +926,25 @@ module TieredSubscription = {
     let data = processData(params.data, ~config=params.config)
 
     let tierMetadataFields = [tierField]
-    let productsByTier = Js.Dict.empty()
 
     let tierSchema = S.union(
-      params.config.tiers->Js.Array2.map(((id, tierConfig)) => {
+      params.config.tiers->Js.Array2.map(((tierRef, tierConfig)) => {
         S.object(s => {
-          let products = []
+          let matchesCounter = ref(-1)
+          s.tag(tierField, tierRef)
           let tier = tierConfig({
-            product: productConfig => {
-              products->Js.Array2.push(productConfig)->ignore
-            },
-            interval: () => s.field("#interval", S.enum([Price.Day, Week, Month, Year])),
             metadata: (name, schema) => {
               validateMetadataSchema(schema)
               tierMetadataFields->Js.Array2.push(name)->ignore
               s.field(name, schema)
             },
+            // We don't need the data in schema,
+            // only for typesystem
+            matches: schema => {
+              matchesCounter := matchesCounter.contents + 1
+              s.field(`#matches${matchesCounter.contents->Js.Int.toString}`, schema)
+            },
           })
-          s.tag(tierField, id)
-          productsByTier->Js.Dict.set(id, products)
           tier
         })
       }),
@@ -942,13 +952,10 @@ module TieredSubscription = {
     let rawTier: dict<string> = params.tier->S.reverseConvertOrThrow(tierSchema)->Obj.magic
 
     let tierId = rawTier->Js.Dict.unsafeGet(tierField)
-    let products = switch productsByTier->Js.Dict.get(tierId) {
-    | Some([]) => Js.Exn.raiseError(`Tier "${tierId}" doesn't have any products configured`)
-    | Some(p) => p
-    | None => Js.Exn.raiseError(`Tier "${tierId}" is not configured on the subscription plan`)
+    let products = switch params.config.products(~data=params.data, ~tier=params.tier) {
+    | [] => Js.Exn.raiseError(`Tier "${tierId}" doesn't have any products configured`)
+    | p => p
     }
-    let specificInterval: option<Price.interval> =
-      rawTier->Js.Dict.unsafeGet("#interval")->Obj.magic
 
     let customer = switch await stripe->internalRetrieveCustomer(data) {
     | Some(c) => c
@@ -990,7 +997,11 @@ module TieredSubscription = {
     }
 
     let productItems =
-      await stripe->ProductCatalog.sync({ProductCatalog.products: products}, ~usedCustomerMeters)
+      await stripe->ProductCatalog.sync(
+        {ProductCatalog.products: products},
+        ~usedCustomerMeters,
+        ~interval=?params.interval,
+      )
 
     Js.log(
       `Creating a new checkout session for subscription "${params.config.ref}" tier "${tierId}"...`,
@@ -1019,34 +1030,21 @@ module TieredSubscription = {
         prices,
         product,
       }): Checkout.Session.lineItemParam => {
-        let lineItemPrice = switch (prices, specificInterval) {
-        | ([], _) => Js.Exn.raiseError(`Product "${product.name}" doesn't have any prices`)
-        | ([price], None) => price
+        let lineItemPrice = switch (prices, params.interval) {
+        | ([], None) => Js.Exn.raiseError(`Product "${product.name}" doesn't have any prices`)
+        | ([], Some(interval)) =>
+          Js.Exn.raiseError(
+            `Product "${product.name}" doesn't have prices for interval "${(interval :> string)}"`,
+          )
+        | ([price], _) => price
         | (_, None) =>
           Js.Exn.raiseError(
-            `Product "${product.name}" have multiple prices but no interval specified. Use "s.interval" to dynamically choose which price use for the tier`,
+            `Product "${product.name}" has multiple prices but no interval specified. Use "interval" param to dynamically choose which price use for the tier`,
           )
-        | (prices, Some(specificInterval)) =>
-          switch prices->Belt.Array.reduce(None, (acc, price) => {
-            let isValid = switch price {
-            | {recurring: Null} => true
-            | {recurring: Value({interval})} => interval === specificInterval
-            }
-            switch (acc, isValid) {
-            | (None, true) => Some(price)
-            | (Some(_), true) =>
-              Js.Exn.raiseError(
-                `Product "${product.name}" has multiple prices for the "${(specificInterval :> string)}" interval billing`,
-              )
-            | (_, false) => acc
-            }
-          }) {
-          | None =>
-            Js.Exn.raiseError(
-              `Product "${product.name}" doesn't have a price for the "${(specificInterval :> string)}" interval billing`,
-            )
-          | Some(p) => p
-          }
+        | (_, Some(interval)) =>
+          Js.Exn.raiseError(
+            `Product "${product.name}" has multiple prices for interval "${(interval :> string)}"`,
+          )
         }
         switch lineItemPrice {
         | {recurring: Value({meter: Value(_)}), id} => {
