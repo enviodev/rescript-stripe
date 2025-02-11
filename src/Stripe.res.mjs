@@ -28,9 +28,20 @@ var Dict = {
   unsafeDeleteKey: unsafeDeleteKey
 };
 
+function addMany(set, values) {
+  values.forEach(function (value) {
+        set.add(value);
+      });
+}
+
+var $$Set = {
+  addMany: addMany
+};
+
 var Stdlib = {
   $$Promise: $$Promise,
-  Dict: Dict
+  Dict: Dict,
+  $$Set: $$Set
 };
 
 function make(prim) {
@@ -43,10 +54,10 @@ var Price = {};
 
 var Product = {};
 
-async function syncProduct(stripe, productConfig, meters) {
+async function syncProduct(stripe, productConfig, meters, usedCustomerMeters) {
   console.log("Searching for active product \"" + productConfig.ref + "\"...");
   var match = await stripe.products.search({
-        query: "active:\"true\" AND metadata[\"product_ref\"]:\"" + productConfig.ref + "\"",
+        query: "active:\"true\" AND metadata[\"#product_ref\"]:\"" + productConfig.ref + "\"",
         limit: 2
       });
   var match$1 = match.data;
@@ -60,7 +71,7 @@ async function syncProduct(stripe, productConfig, meters) {
       var p = await stripe.products.create({
             name: productConfig.name,
             metadata: Js_dict.fromArray([[
-                    "product_ref",
+                    "#product_ref",
                     productConfig.ref
                   ]]),
             unit_label: productConfig.unitLabel
@@ -110,83 +121,139 @@ async function syncProduct(stripe, productConfig, meters) {
   if (prices.has_more) {
     Js_exn.raiseError("The pagination on prices is not supported yet. Product \"" + productConfig.ref + "\" has to many active prices");
   }
-  var createPriceFromConfig = async function (priceConfig, transferLookupKey) {
+  var createPriceFromConfig = async function (priceConfig) {
     var match = priceConfig.recurring;
-    var tmp;
-    tmp = match.TAG === "Metered" ? Js_dict.fromArray([[
-              "#meter_ref",
-              match.ref
-            ]]) : undefined;
-    var match$1 = priceConfig.recurring;
-    var tmp$1;
-    if (match$1.TAG === "Metered") {
-      var ref = match$1.ref;
-      var meters$1 = meters !== undefined ? meters : Js_exn.raiseError("The Meters hash map argument is required when you defined metered prices");
-      var meter = Js_dict.get(meters$1, ref);
+    var match$1;
+    if (match.TAG === "Metered") {
+      var ref = match.ref;
+      var meters$1 = meters !== undefined ? meters : Js_exn.raiseError("The \"meters\" argument is required when product catalog contains a Metered price");
+      var usedCustomerMeters$1 = usedCustomerMeters !== undefined ? Caml_option.valFromOption(usedCustomerMeters) : Js_exn.raiseError("The \"usedCustomerMeters\" argument is required when product catalog contains a Metered price");
+      var getEventName = function (meterRef, _counterOpt) {
+        while(true) {
+          var counterOpt = _counterOpt;
+          var counter = counterOpt !== undefined ? counterOpt : 0;
+          var eventName = counter !== 0 ? meterRef + "_" + (counter + 1 | 0).toString() : meterRef;
+          if (!usedCustomerMeters$1.has(eventName)) {
+            return eventName;
+          }
+          _counterOpt = counter + 1 | 0;
+          continue ;
+        };
+      };
+      var eventName = getEventName(ref, undefined);
+      var meter = Js_dict.get(meters$1, eventName);
       var meter$1;
       if (meter !== undefined) {
         meter$1 = meter;
       } else {
-        console.log("Meter \"" + ref + "\" does not exist. Creating...");
+        console.log("Meter \"" + eventName + "\" does not exist. Creating...");
         var meter$2 = await stripe.billing.meters.create({
               default_aggregation: {
                 formula: "sum"
               },
               display_name: ref,
-              event_name: ref
+              event_name: eventName
             });
-        console.log("Meter \"" + ref + "\" successfully created. Meter ID: " + meter$2.id);
+        console.log("Meter \"" + eventName + "\" successfully created. Meter ID: " + meter$2.id);
         meter$1 = meter$2;
       }
-      tmp$1 = {
-        interval: match$1.interval,
-        meter: meter$1.id,
-        usage_type: "metered"
-      };
+      match$1 = [
+        Js_dict.fromArray([
+              [
+                "#meter_ref",
+                ref
+              ],
+              [
+                "#meter_event_name",
+                eventName
+              ],
+              [
+                "#price_ref",
+                priceConfig.ref
+              ]
+            ]),
+        {
+          interval: match.interval,
+          meter: meter$1.id,
+          usage_type: "metered"
+        },
+        ref === eventName,
+        ref === eventName ? undefined : "Copy with meter \"" + eventName + "\""
+      ];
     } else {
-      tmp$1 = {
-        interval: match$1.interval
-      };
+      match$1 = [
+        undefined,
+        {
+          interval: match.interval
+        },
+        true,
+        undefined
+      ];
     }
+    var transferLookupKey = match$1[2];
+    var match$2 = priceConfig.lookupKey;
     return await stripe.prices.create({
                 currency: priceConfig.currency,
                 product: product.id,
-                metadata: tmp,
-                recurring: tmp$1,
+                metadata: match$1[0],
+                nickname: match$1[3],
+                recurring: match$1[1],
                 unit_amount: priceConfig.unitAmountInCents,
-                lookup_key: priceConfig.lookupKey,
+                lookup_key: transferLookupKey && match$2 !== undefined && match$2 ? priceConfig.ref : undefined,
                 transfer_lookup_key: transferLookupKey
               });
   };
   var prices$1 = await Promise.all(productConfig.prices.map(async function (priceConfig) {
             var existingPrice = prices.data.find(function (price) {
-                  if (!(priceConfig.currency === price.currency && priceConfig.lookupKey === Caml_option.null_to_opt(price.lookup_key) && priceConfig.unitAmountInCents === price.unit_amount)) {
+                  var tmp = false;
+                  if (priceConfig.currency === price.currency) {
+                    var match = priceConfig.lookupKey;
+                    var match$1 = price.lookup_key;
+                    var tmp$1;
+                    var exit = 0;
+                    if (match !== undefined && match) {
+                      tmp$1 = match$1 === null ? false : priceConfig.ref === match$1;
+                    } else {
+                      exit = 1;
+                    }
+                    if (exit === 1) {
+                      tmp$1 = match$1 === null ? true : false;
+                    }
+                    tmp = tmp$1;
+                  }
+                  if (!(tmp && priceConfig.unitAmountInCents === price.unit_amount)) {
                     return false;
                   }
                   var priceRecurring = price.recurring;
                   if (priceRecurring === null) {
                     return false;
                   }
-                  var match = priceConfig.recurring;
-                  if (match.TAG === "Metered") {
-                    if (priceRecurring.usage_type === "metered" && priceRecurring.interval === match.interval && Js_option.isSome(Caml_option.null_to_opt(priceRecurring.meter))) {
-                      return price.metadata["#meter_ref"] === match.ref;
+                  var match$2 = priceConfig.recurring;
+                  if (match$2.TAG !== "Metered") {
+                    if (priceRecurring.usage_type === "licensed" && priceRecurring.interval === match$2.interval) {
+                      return priceRecurring.meter === null;
                     } else {
                       return false;
                     }
-                  } else if (priceRecurring.usage_type === "licensed" && priceRecurring.interval === match.interval) {
-                    return priceRecurring.meter === null;
+                  }
+                  var usedCustomerMeters$1 = usedCustomerMeters !== undefined ? Caml_option.valFromOption(usedCustomerMeters) : Js_exn.raiseError("The \"usedCustomerMeters\" argument is required when product catalog contains a Metered price");
+                  if (!(priceRecurring.usage_type === "metered" && priceRecurring.interval === match$2.interval && Js_option.isSome(Caml_option.null_to_opt(priceRecurring.meter)) && price.metadata["#meter_ref"] === match$2.ref)) {
+                    return false;
+                  }
+                  var meterEventName = Js_dict.get(price.metadata, "#meter_event_name");
+                  if (meterEventName !== undefined) {
+                    return !usedCustomerMeters$1.has(meterEventName);
                   } else {
                     return false;
                   }
                 });
             if (existingPrice !== undefined) {
-              console.log("Found an existing price \"" + Belt_Option.getWithDefault(priceConfig.lookupKey, "-") + "\" for product \"" + productConfig.ref + "\". Price ID: " + existingPrice.id);
+              console.log("Found an existing price \"" + priceConfig.ref + "\" for product \"" + productConfig.ref + "\". Price ID: " + existingPrice.id);
               return existingPrice;
             }
-            console.log("A price for product \"" + productConfig.ref + "\" is not in sync. Updating...");
-            var price = await createPriceFromConfig(priceConfig, true);
-            console.log("Price for product \"" + productConfig.ref + "\" successfully recreated with the new values. Price ID: " + price.id);
+            console.log("Price \"" + priceConfig.ref + "\" for product \"" + productConfig.ref + "\" is not in sync. Updating...");
+            var price = await createPriceFromConfig(priceConfig);
+            console.log("Price \"" + priceConfig.ref + "\" for product \"" + productConfig.ref + "\" successfully recreated with the new values. Price ID: " + price.id);
             return price;
           }));
   return {
@@ -195,7 +262,7 @@ async function syncProduct(stripe, productConfig, meters) {
         };
 }
 
-async function sync(stripe, productCatalog) {
+async function sync(stripe, productCatalog, usedCustomerMeters) {
   var isMeterNeeded = productCatalog.products.some(function (p) {
         return p.prices.some(function (p) {
                     var match = p.recurring;
@@ -225,7 +292,7 @@ async function sync(stripe, productCatalog) {
     meters = undefined;
   }
   var products = await Promise.all(productCatalog.products.map(function (p) {
-            return syncProduct(stripe, p, meters);
+            return syncProduct(stripe, p, meters, usedCustomerMeters);
           }));
   console.log("Successfully finished syncing products");
   return products;
@@ -252,9 +319,18 @@ function getMeterId(subscription, meterRef) {
               }));
 }
 
+function getMeterEventName(subscription, meterRef) {
+  return Belt_Option.flatMap(Caml_option.undefined_to_opt(subscription.items.data.find(function (item) {
+                      return item.price.metadata["#meter_ref"] === meterRef;
+                    })), (function (i) {
+                return Js_dict.get(i.price.metadata, "#meter_event_name");
+              }));
+}
+
 var Subscription = {
   isTerminatedStatus: isTerminatedStatus,
-  getMeterId: getMeterId
+  getMeterId: getMeterId,
+  getMeterEventName: getMeterEventName
 };
 
 var Session = {};
@@ -268,6 +344,20 @@ var Tier = {};
 var refField = "#subscription_ref";
 
 var tierField = "#subscription_tier";
+
+async function listSubscriptions(stripe, config, customerId) {
+  var match = await stripe.subscriptions.list({
+        customer: customerId,
+        limit: 100
+      });
+  if (match.has_more) {
+    return Js_exn.raiseError("Found more than 100 subscriptions, which is not supported yet");
+  } else {
+    return match.data.filter(function (subscription) {
+                return subscription.metadata[refField] === config.ref;
+              });
+  }
+}
 
 function validateMetadataSchema(schema) {
   var match = schema.t;
@@ -346,19 +436,22 @@ async function internalRetrieveCustomer(stripe, data) {
   return c;
 }
 
-async function internalRetrieveSubscription(stripe, data, subecriptionRef, customer) {
-  console.log("Searching for an existing \"" + subecriptionRef + "\" subscription...");
-  var match = await stripe.subscriptions.list({
-        customer: customer.id,
-        status: "active",
-        limit: 100
-      });
-  if (match.has_more) {
-    return Js_exn.raiseError("Customers has more than 100 subscriptions, which is not supported yet");
-  }
-  var subscriptions = match.data;
+async function internalRetrieveSubscription(stripe, data, config, customerId, usedMetersAcc) {
+  console.log("Searching for an existing \"" + config.ref + "\" subscription for customer \"" + customerId + "\"...");
+  var subscriptions = await listSubscriptions(stripe, config, customerId);
   console.log("Found " + subscriptions.length.toString() + " subscriptions for the customer. Validating that the new subscription is not already active...");
   return Caml_option.undefined_to_opt(subscriptions.find(function (subscription) {
+                  if (usedMetersAcc !== undefined) {
+                    var usedMetersAcc$1 = Caml_option.valFromOption(usedMetersAcc);
+                    Belt_Array.forEach(subscription.items.data, (function (item) {
+                            var meterEventName = Js_dict.get(item.price.metadata, "#meter_event_name");
+                            if (meterEventName !== undefined) {
+                              usedMetersAcc$1.add(meterEventName);
+                              return ;
+                            }
+                            
+                          }));
+                  }
                   if (data.primaryFields.every(function (name) {
                           return subscription.metadata[name] === data.dict[name];
                         })) {
@@ -378,7 +471,7 @@ async function retrieveSubscription(stripe, config, data) {
   var processedData = processData(data, config);
   var customer = await internalRetrieveCustomer(stripe, processedData);
   if (customer !== undefined) {
-    return await internalRetrieveSubscription(stripe, processedData, config.ref, customer);
+    return await internalRetrieveSubscription(stripe, processedData, config, customer.id, undefined);
   }
   
 }
@@ -399,7 +492,7 @@ async function createHostedCheckoutSession(stripe, params) {
                                   return s.f(name, schema);
                                 }),
                               interval: (function () {
-                                  return s.f("~~interval", S$RescriptSchema.$$enum([
+                                  return s.f("#interval", S$RescriptSchema.$$enum([
                                                   "day",
                                                   "week",
                                                   "month",
@@ -421,7 +514,7 @@ async function createHostedCheckoutSession(stripe, params) {
   var products = p !== undefined ? (
       p.length !== 0 ? p : Js_exn.raiseError("Tier \"" + tierId + "\" doesn't have any products configured")
     ) : Js_exn.raiseError("Tier \"" + tierId + "\" is not configured on the subscription plan");
-  var specificInterval = rawTier["~~interval"];
+  var specificInterval = rawTier["#interval"];
   var c = await internalRetrieveCustomer(stripe, data);
   var customer;
   if (c !== undefined) {
@@ -439,17 +532,18 @@ async function createHostedCheckoutSession(stripe, params) {
     console.log("Successfully created a new customer with id: " + c$1.id);
     customer = c$1;
   }
-  var subscription = await internalRetrieveSubscription(stripe, data, params.config.ref, customer);
+  var usedCustomerMeters = new Set();
+  var subscription = await internalRetrieveSubscription(stripe, data, params.config, customer.id, Caml_option.some(usedCustomerMeters));
   if (subscription !== undefined) {
-    Js_exn.raiseError("There's already an active \"" + subscription.id + "\" subscription for " + data.primaryFields.map(function (name) {
+    Js_exn.raiseError("There's already an active \"" + params.config.ref + "\" subscription for " + data.primaryFields.map(function (name) {
                 return name + "=" + data.dict[name];
-              }).join(", ") + " with the \"" + tierId + "\" tier. Either update the existing subscription or cancel it and create a new one");
+              }).join(", ") + " with the \"" + tierId + "\" tier and id \"" + subscription.id + "\". Either update the existing subscription or cancel it and create a new one");
   } else {
     console.log("Customer doesn't have an active \"" + params.config.ref + "\" subscription");
   }
   var productItems = await sync(stripe, {
         products: products
-      });
+      }, Caml_option.some(usedCustomerMeters));
   console.log("Creating a new checkout session for subscription \"" + params.config.ref + "\" tier \"" + tierId + "\"...");
   var match = params.config.termsOfServiceConsent;
   var session = await stripe.checkout.sessions.create({
@@ -548,6 +642,7 @@ var TieredSubscription = {
   Tier: Tier,
   refField: refField,
   tierField: tierField,
+  listSubscriptions: listSubscriptions,
   retrieveCustomer: retrieveCustomer,
   retrieveSubscription: retrieveSubscription,
   createHostedCheckoutSession: createHostedCheckoutSession

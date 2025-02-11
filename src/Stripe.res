@@ -60,6 +60,54 @@ module Stdlib = {
       delete dict[key];
     }`)
   }
+
+  module Set = {
+    type t<'value>
+
+    @ocaml.doc("Creates a new `Set` object.") @new
+    external make: unit => t<'value> = "Set"
+
+    @ocaml.doc("Creates a new `Set` object.") @new
+    external fromEntries: array<'value> => t<'value> = "Set"
+
+    @ocaml.doc("Returns the number of values in the `Set` object.") @get
+    external size: t<'value> => int = "size"
+
+    @ocaml.doc("Appends `value` to the `Set` object. Returns the `Set` object with added value.")
+    @send
+    external add: (t<'value>, 'value) => t<'value> = "add"
+
+    let addMany = (set, values) => values->Js.Array2.forEach(value => set->add(value)->ignore)
+
+    @ocaml.doc("Removes all elements from the `Set` object.") @send
+    external clear: t<'value> => unit = "clear"
+
+    @ocaml.doc(
+      "Removes the element associated to the `value` and returns a boolean asserting whether an element was successfully removed or not. `Set.prototype.has(value)` will return `false` afterwards."
+    )
+    @send
+    external delete: (t<'value>, 'value) => bool = "delete"
+
+    @ocaml.doc(
+      "Returns a boolean asserting whether an element is present with the given value in the `Set` object or not."
+    )
+    @send
+    external has: (t<'value>, 'value) => bool = "has"
+
+    external toArray: t<'a> => array<'a> = "Array.from"
+
+    @ocaml.doc(
+      "Calls `callbackFn` once for each value present in the `Set` object, in insertion order."
+    )
+    @send
+    external forEach: (t<'value>, 'value => unit) => unit = "forEach"
+
+    @ocaml.doc(
+      "Calls `callbackFn` once for each value present in the `Set` object, in insertion order."
+    )
+    @send
+    external forEachWithSet: (t<'value>, ('value, 'value, t<'value>) => unit) => unit = "forEach"
+  }
 }
 
 type stripe
@@ -275,10 +323,11 @@ module ProductCatalog = {
     | Licensed({interval: Price.interval})
 
   type priceConfig = {
+    ref: string,
     currency: currency,
-    lookupKey?: string,
     unitAmountInCents: int,
     recurring: recurringConfig,
+    lookupKey?: bool,
   }
 
   type productConfig = {
@@ -299,10 +348,11 @@ module ProductCatalog = {
     stripe: stripe,
     productConfig: productConfig,
     ~meters: option<dict<Meter.t>>=?,
+    ~usedCustomerMeters=?,
   ) => {
     Js.log(`Searching for active product "${productConfig.ref}"...`)
     let product = switch await stripe->Product.search({
-      query: `active:"true" AND metadata["product_ref"]:"${productConfig.ref}"`,
+      query: `active:"true" AND metadata["#product_ref"]:"${productConfig.ref}"`,
       limit: 2,
     }) {
     | {data: []} => {
@@ -310,7 +360,7 @@ module ProductCatalog = {
         let p = await stripe->Product.create({
           name: productConfig.name,
           unitLabel: ?productConfig.unitLabel,
-          metadata: Js.Dict.fromArray([("product_ref", productConfig.ref)]),
+          metadata: Js.Dict.fromArray([("#product_ref", productConfig.ref)]),
         })
         Js.log(`Product "${productConfig.ref}" successfully created. Product ID: ${p.id}`)
         p
@@ -362,48 +412,78 @@ module ProductCatalog = {
       )
     }
 
-    let createPriceFromConfig = async (priceConfig, ~transferLookupKey=?) => {
-      await stripe->Price.create({
-        currency: priceConfig.currency,
-        product: product.id,
-        unitAmountInCents: priceConfig.unitAmountInCents,
-        lookupKey: ?priceConfig.lookupKey,
-        metadata: ?switch priceConfig.recurring {
-        | Licensed(_) => None
-        // TODO: Also save meter_event_name
-        | Metered({ref}) => Some(Js.Dict.fromArray([("#meter_ref", ref)]))
-        },
-        recurring: switch priceConfig.recurring {
-        | Licensed({interval}) => {interval: interval}
-        | Metered({interval, ref}) => {
-            let meters = switch meters {
-            | Some(m) => m
-            | None =>
-              Js.Exn.raiseError(`The Meters hash map argument is required when you defined metered prices`)
+    let createPriceFromConfig = async priceConfig => {
+      let (metadata, recurring, transferLookupKey, nickname) = switch priceConfig.recurring {
+      | Licensed({interval}) => (None, {Price.interval: interval}, true, None)
+      | Metered({interval, ref}) => {
+          let meters = switch meters {
+          | Some(m) => m
+          | None =>
+            Js.Exn.raiseError(`The "meters" argument is required when product catalog contains a Metered price`)
+          }
+          let usedCustomerMeters = switch usedCustomerMeters {
+          | Some(m) => m
+          | None =>
+            Js.Exn.raiseError(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`)
+          }
+          let rec getEventName = (~meterRef, ~counter=0) => {
+            let eventName = switch counter {
+            | 0 => meterRef
+            | _ => `${meterRef}_${(counter + 1)->Js.Int.toString}`
             }
-            let meter = switch meters->Js.Dict.get(ref) {
-            | Some(meter) => meter
-            | None =>
-              Js.log(`Meter "${ref}" does not exist. Creating...`)
-              let meter = await stripe->Meter.create({
-                displayName: ref,
-                eventName: ref,
-                defaultAggregation: {
-                  formula: Sum,
-                },
-              })
-              Js.log(`Meter "${ref}" successfully created. Meter ID: ${meter.id}`)
-              meter
+            if usedCustomerMeters->Stdlib.Set.has(eventName) {
+              getEventName(~meterRef, ~counter=counter + 1)
+            } else {
+              eventName
             }
+          }
+          let eventName = getEventName(~meterRef=ref)
+          let meter = switch meters->Js.Dict.get(eventName) {
+          | Some(meter) => meter
+          | None =>
+            Js.log(`Meter "${eventName}" does not exist. Creating...`)
+            let meter = await stripe->Meter.create({
+              displayName: ref,
+              eventName,
+              defaultAggregation: {
+                formula: Sum,
+              },
+            })
+            Js.log(`Meter "${eventName}" successfully created. Meter ID: ${meter.id}`)
+            meter
+          }
 
+          (
+            Some(
+              Js.Dict.fromArray([
+                ("#meter_ref", ref),
+                ("#meter_event_name", eventName),
+                ("#price_ref", priceConfig.ref),
+              ]),
+            ),
             {
               interval,
               usageType: Metered,
               meter: meter.id,
-            }
-          }
+            },
+            ref === eventName,
+            ref === eventName ? None : Some(`Copy with meter "${eventName}"`),
+          )
+        }
+      }
+
+      await stripe->Price.create({
+        currency: priceConfig.currency,
+        product: product.id,
+        unitAmountInCents: priceConfig.unitAmountInCents,
+        lookupKey: ?switch (transferLookupKey, priceConfig.lookupKey) {
+        | (true, Some(true)) => Some(priceConfig.ref)
+        | _ => None
         },
-        ?transferLookupKey,
+        ?nickname,
+        ?metadata,
+        recurring,
+        transferLookupKey,
       })
     }
 
@@ -413,7 +493,12 @@ module ProductCatalog = {
         let existingPrice = prices.data->Js.Array2.find(price => {
           let isPriceInSync =
             priceConfig.currency === price.currency &&
-            priceConfig.lookupKey === price.lookupKey->Js.Null.toOption &&
+            switch (priceConfig.lookupKey, price.lookupKey) {
+            | (Some(true), Value(lookupKey)) => priceConfig.ref === lookupKey
+            | (Some(true), Null)
+            | (_, Value(_)) => false
+            | (_, Null) => true
+            } &&
             Js.Null.Value(priceConfig.unitAmountInCents) === price.unitAmountInCents &&
             switch price.recurring {
             | Null => false
@@ -424,10 +509,20 @@ module ProductCatalog = {
                 priceRecurring.interval === interval &&
                 priceRecurring.meter === Null
               | Metered({interval, ref}) =>
+                let usedCustomerMeters = switch usedCustomerMeters {
+                | Some(m) => m
+                | None =>
+                  Js.Exn.raiseError(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`)
+                }
+
                 priceRecurring.usageType === Metered &&
                 priceRecurring.interval === interval &&
                 priceRecurring.meter->Js.Null.toOption->Js.Option.isSome &&
-                price.metadata->Js.Dict.unsafeGet("#meter_ref") === ref
+                price.metadata->Js.Dict.unsafeGet("#meter_ref") === ref &&
+                switch price.metadata->Js.Dict.get("#meter_event_name") {
+                | None => false
+                | Some(meterEventName) => !(usedCustomerMeters->Stdlib.Set.has(meterEventName))
+                }
               }
             }
           isPriceInSync
@@ -435,17 +530,17 @@ module ProductCatalog = {
         switch existingPrice {
         | Some(price) => {
             Js.log(
-              `Found an existing price "${priceConfig.lookupKey->Belt.Option.getWithDefault(
-                  "-",
-                )}" for product "${productConfig.ref}". Price ID: ${price.id}`,
+              `Found an existing price "${priceConfig.ref}" for product "${productConfig.ref}". Price ID: ${price.id}`,
             )
             price
           }
         | None => {
-            Js.log(`A price for product "${productConfig.ref}" is not in sync. Updating...`)
-            let price = await createPriceFromConfig(priceConfig, ~transferLookupKey=true)
             Js.log(
-              `Price for product "${productConfig.ref}" successfully recreated with the new values. Price ID: ${price.id}`,
+              `Price "${priceConfig.ref}" for product "${productConfig.ref}" is not in sync. Updating...`,
+            )
+            let price = await createPriceFromConfig(priceConfig)
+            Js.log(
+              `Price "${priceConfig.ref}" for product "${productConfig.ref}" successfully recreated with the new values. Price ID: ${price.id}`,
             )
             price
           }
@@ -459,7 +554,7 @@ module ProductCatalog = {
     }
   }
 
-  let sync = async (stripe: stripe, productCatalog: t) => {
+  let sync = async (stripe: stripe, productCatalog: t, ~usedCustomerMeters=?) => {
     let isMeterNeeded = productCatalog.products->Js.Array2.some(p =>
       p.prices->Js.Array2.some(p =>
         switch p.recurring {
@@ -483,7 +578,7 @@ module ProductCatalog = {
 
     let products =
       await productCatalog.products
-      ->Js.Array2.map(p => stripe->syncProduct(p, ~meters?))
+      ->Js.Array2.map(p => stripe->syncProduct(p, ~meters?, ~usedCustomerMeters?))
       ->Stdlib.Promise.all
     Js.log(`Successfully finished syncing products`)
     products
@@ -576,6 +671,14 @@ module Subscription = {
     ->Belt.Option.flatMap(i => i.price.recurring->Js.Null.toOption)
     ->Belt.Option.flatMap(r => r.meter->Js.Null.toOption)
   }
+
+  let getMeterEventName = (subscription, ~meterRef) => {
+    subscription.items.data
+    ->Js.Array2.find(item => {
+      item.price.metadata->Js.Dict.unsafeGet("#meter_ref") === meterRef
+    })
+    ->Belt.Option.flatMap(i => i.price.metadata->Js.Dict.get("#meter_event_name"))
+  }
 }
 
 module Checkout = {
@@ -649,6 +752,20 @@ module TieredSubscription = {
 
   let refField = "#subscription_ref"
   let tierField = "#subscription_tier"
+
+  let listSubscriptions = async (stripe, ~config, ~customerId=?) => {
+    switch await stripe->Subscription.list({
+      customer: ?customerId,
+      limit: 100,
+    }) {
+    | {hasMore: true} =>
+      Js.Exn.raiseError(`Found more than 100 subscriptions, which is not supported yet`)
+    | {data: subscriptions} =>
+      subscriptions->Js.Array2.filter(subscription => {
+        subscription.metadata->Js.Dict.unsafeGet(refField) === config.ref
+      })
+    }
+  }
 
   %%private(
     let validateMetadataSchema = schema => {
@@ -726,44 +843,48 @@ module TieredSubscription = {
     let internalRetrieveSubscription = async (
       stripe,
       data,
-      ~subecriptionRef,
-      ~customer: Customer.t,
+      ~config,
+      ~customerId,
+      ~usedMetersAcc=?,
     ) => {
-      Js.log(`Searching for an existing "${subecriptionRef}" subscription...`)
-      switch await stripe->Subscription.list({
-        customer: customer.id,
-        limit: 100,
-        status: Active,
-      }) {
-      | {hasMore: true} =>
-        Js.Exn.raiseError(`Customers has more than 100 subscriptions, which is not supported yet`)
-      | {data: subscriptions} =>
-        Js.log(
-          `Found ${subscriptions
-            ->Js.Array2.length
-            ->Js.Int.toString} subscriptions for the customer. Validating that the new subscription is not already active...`,
-        )
-        subscriptions->Js.Array2.find(subscription => {
-          if (
-            data["primaryFields"]->Js.Array2.every(name => {
-              subscription.metadata->Js.Dict.unsafeGet(name) ===
-                data["dict"]->Js.Dict.unsafeGet(name)
-            })
-          ) {
-            Js.log(`Found an existing subscription. Subscription ID: ${subscription.id}`)
-            if subscription.status->Subscription.isTerminatedStatus {
-              Js.log(
-                `The subscription is terminated with status ${(subscription.status :> string)}. Skipping...`,
-              )
-              false
-            } else {
-              true
+      Js.log(
+        `Searching for an existing "${config.ref}" subscription for customer "${customerId}"...`,
+      )
+      let subscriptions = await stripe->listSubscriptions(~config, ~customerId)
+      Js.log(
+        `Found ${subscriptions
+          ->Js.Array2.length
+          ->Js.Int.toString} subscriptions for the customer. Validating that the new subscription is not already active...`,
+      )
+      subscriptions->Js.Array2.find(subscription => {
+        switch usedMetersAcc {
+        | Some(usedMetersAcc) =>
+          subscription.items.data->Belt.Array.forEach(item => {
+            switch item.price.metadata->Js.Dict.get("#meter_event_name") {
+            | None => ()
+            | Some(meterEventName) => usedMetersAcc->Stdlib.Set.add(meterEventName)->ignore
             }
-          } else {
+          })
+        | None => ()
+        }
+        if (
+          data["primaryFields"]->Js.Array2.every(name => {
+            subscription.metadata->Js.Dict.unsafeGet(name) === data["dict"]->Js.Dict.unsafeGet(name)
+          })
+        ) {
+          Js.log(`Found an existing subscription. Subscription ID: ${subscription.id}`)
+          if subscription.status->Subscription.isTerminatedStatus {
+            Js.log(
+              `The subscription "${subscription.id}" is terminated with status ${(subscription.status :> string)}. Skipping...`,
+            )
             false
+          } else {
+            true
           }
-        })
-      }
+        } else {
+          false
+        }
+      })
     }
   )
 
@@ -775,12 +896,7 @@ module TieredSubscription = {
     let processedData = processData(data, ~config)
     switch await internalRetrieveCustomer(stripe, processedData) {
     | Some(customer) =>
-      await internalRetrieveSubscription(
-        stripe,
-        processedData,
-        ~customer,
-        ~subecriptionRef=config.ref,
-      )
+      await internalRetrieveSubscription(stripe, processedData, ~customerId=customer.id, ~config)
     | None => None
     }
   }
@@ -810,7 +926,7 @@ module TieredSubscription = {
             product: productConfig => {
               products->Js.Array2.push(productConfig)->ignore
             },
-            interval: () => s.field("~~interval", S.enum([Price.Day, Week, Month, Year])),
+            interval: () => s.field("#interval", S.enum([Price.Day, Week, Month, Year])),
             metadata: (name, schema) => {
               validateMetadataSchema(schema)
               tierMetadataFields->Js.Array2.push(name)->ignore
@@ -832,7 +948,7 @@ module TieredSubscription = {
     | None => Js.Exn.raiseError(`Tier "${tierId}" is not configured on the subscription plan`)
     }
     let specificInterval: option<Price.interval> =
-      rawTier->Js.Dict.unsafeGet("~~interval")->Obj.magic
+      rawTier->Js.Dict.unsafeGet("#interval")->Obj.magic
 
     let customer = switch await stripe->internalRetrieveCustomer(data) {
     | Some(c) => c
@@ -853,24 +969,28 @@ module TieredSubscription = {
       }
     }
 
+    let usedCustomerMeters = Stdlib.Set.make()
+
     switch await internalRetrieveSubscription(
       stripe,
       data,
-      ~customer,
-      ~subecriptionRef=params.config.ref,
+      ~customerId=customer.id,
+      ~config=params.config,
+      ~usedMetersAcc=usedCustomerMeters,
     ) {
     | None => Js.log(`Customer doesn't have an active "${params.config.ref}" subscription`)
     | Some(subscription) =>
       Js.Exn.raiseError(
-        `There's already an active "${subscription.id}" subscription for ${data["primaryFields"]
+        `There's already an active "${params.config.ref}" subscription for ${data["primaryFields"]
           ->Js.Array2.map(name => `${name}=${data["dict"]->Js.Dict.unsafeGet(name)}`)
           ->Js.Array2.joinWith(
             ", ",
-          )} with the "${tierId}" tier. Either update the existing subscription or cancel it and create a new one`,
+          )} with the "${tierId}" tier and id "${subscription.id}". Either update the existing subscription or cancel it and create a new one`,
       )
     }
 
-    let productItems = await stripe->ProductCatalog.sync({ProductCatalog.products: products})
+    let productItems =
+      await stripe->ProductCatalog.sync({ProductCatalog.products: products}, ~usedCustomerMeters)
 
     Js.log(
       `Creating a new checkout session for subscription "${params.config.ref}" tier "${tierId}"...`,
