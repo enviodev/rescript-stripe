@@ -19,6 +19,10 @@
       "__tests__/**/*_test.res.mjs"
     ]
   },
+  "files": [
+    "src",
+    "rescript.json"
+  ],
   "dependencies": {
     "rescript-schema": "^9.1.0",
     "stripe": "^17.6.0"
