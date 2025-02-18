@@ -399,21 +399,6 @@ async function listSubscriptions(stripe, config, customerId) {
   }
 }
 
-function validateMetadataSchema(schema) {
-  var match = schema.t;
-  if (typeof match !== "object") {
-    if (match === "string") {
-      return ;
-    } else {
-      return Js_exn.raiseError("Currently only string schemas are supported for data fields");
-    }
-  } else if (match.TAG === "literal" && match._0.kind === "String") {
-    return ;
-  } else {
-    return Js_exn.raiseError("Currently only string schemas are supported for data fields");
-  }
-}
-
 function processData(data, config) {
   var primaryFields = [refField];
   var customerLookupFields = [];
@@ -423,18 +408,16 @@ function processData(data, config) {
         return config.data({
                     primary: (function (name, schema, customerLookupOpt) {
                         var customerLookup = customerLookupOpt !== undefined ? customerLookupOpt : false;
-                        validateMetadataSchema(schema);
                         primaryFields.push(name);
                         metadataFields.push(name);
                         if (customerLookup) {
                           customerLookupFields.push(name);
                         }
-                        return s.f(name, schema);
+                        return s.f(name, S$RescriptSchema.coerce(S$RescriptSchema.string, schema));
                       }),
                     metadata: (function (name, schema) {
-                        validateMetadataSchema(schema);
                         metadataFields.push(name);
-                        return s.f(name, schema);
+                        return s.f(name, S$RescriptSchema.coerce(S$RescriptSchema.string, schema));
                       })
                   });
       });
@@ -529,9 +512,8 @@ async function createHostedCheckoutSession(stripe, params) {
                         s.tag(tierField, tierRef);
                         return tierConfig({
                                     metadata: (function (name, schema) {
-                                        validateMetadataSchema(schema);
                                         tierMetadataFields.push(name);
-                                        return s.f(name, schema);
+                                        return s.f(name, S$RescriptSchema.coerce(S$RescriptSchema.string, schema));
                                       }),
                                     matches: (function (schema) {
                                         matchesCounter.contents = matchesCounter.contents + 1 | 0;

@@ -815,14 +815,6 @@ module TieredSubscription = {
   }
 
   %%private(
-    let validateMetadataSchema = schema => {
-      switch schema->S.classify {
-      | String
-      | Literal(String(_)) => ()
-      | _ => Js.Exn.raiseError("Currently only string schemas are supported for data fields")
-      }
-    }
-
     let processData = (data, ~config) => {
       let primaryFields = [refField]
       let customerLookupFields = []
@@ -831,18 +823,16 @@ module TieredSubscription = {
         s.tag(refField, config.ref)
         config.data({
           primary: (name, schema, ~customerLookup=false) => {
-            validateMetadataSchema(schema)
             primaryFields->Js.Array2.push(name)->ignore
             metadataFields->Js.Array2.push(name)->ignore
             if customerLookup {
               customerLookupFields->Js.Array2.push(name)->ignore
             }
-            s.field(name, schema)
+            s.field(name, S.string->S.coerce(schema))
           },
           metadata: (name, schema) => {
-            validateMetadataSchema(schema)
             metadataFields->Js.Array2.push(name)->ignore
-            s.field(name, schema)
+            s.field(name, S.string->S.coerce(schema))
           },
         })
       })
@@ -972,9 +962,8 @@ module TieredSubscription = {
           s.tag(tierField, tierRef)
           let tier = tierConfig({
             metadata: (name, schema) => {
-              validateMetadataSchema(schema)
               tierMetadataFields->Js.Array2.push(name)->ignore
-              s.field(name, schema)
+              s.field(name, S.string->S.coerce(schema))
             },
             // We don't need the data in schema,
             // only for typesystem

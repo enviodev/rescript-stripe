@@ -3,16 +3,28 @@
   "version": "0.1.0",
   "keywords": [
     "rescript",
-    "stripe"
+    "stripe",
+    "billing",
+    "config",
+    "subscription",
+    "saas"
   ],
   "license": "MIT",
-  "author": "envio contributors <about@envio.dev>",
+  "author": "Envio contributors <about@envio.dev>",
   "scripts": {
     "build": "rescript",
     "res": "rescript -w",
     "test": "ava",
     "sync": "node scripts/Sync.res.mjs",
     "subscribe": "node scripts/Subscribe.res.mjs"
+  },
+  "homepage": "https://github.com/enviodev/rescript-stripe#readme",
+  "bugs": {
+    "url": "https://github.com/enviodev/rescript-stripe/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/enviodev/rescript-stripe.git"
   },
   "ava": {
     "files": [
@@ -24,7 +36,7 @@
     "rescript.json"
   ],
   "dependencies": {
-    "rescript-schema": "^9.1.0",
+    "rescript-schema": "^9.3.0",
     "stripe": "^17.6.0"
   },
   "devDependencies": {

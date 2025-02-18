@@ -8,10 +8,6 @@
     {
       "dir": "__tests__",
       "type": "dev"
-    },
-    {
-      "dir": "scripts",
-      "type": "dev"
     }
   ],
   "package-specs": {
