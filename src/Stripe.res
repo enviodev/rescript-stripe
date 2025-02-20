@@ -661,6 +661,12 @@ module Subscription = {
     metadata: dict<string>,
     status: status,
     customer: string,
+    @as("current_period_end")
+    currentPeriodEnd: int,
+    @as("current_period_start")
+    currentPeriodStart: int,
+    @as("cancel_at_period_end")
+    cancelAtPeriodEnd: bool,
     items: page<item>,
   }
 
@@ -776,8 +782,8 @@ module Checkout = {
   }
 }
 
-module TieredSubscription = {
-  module Tier = {
+module Billing = {
+  module Plan = {
     type s = {
       metadata: 'v. (string, S.t<'v>) => 'v,
       matches: 'v. S.t<'v> => 'v,
@@ -789,16 +795,16 @@ module TieredSubscription = {
     metadata: 'v. (string, S.t<'v>) => 'v,
   }
 
-  type t<'data, 'tier> = {
+  type t<'data, 'plan> = {
     ref: string,
     data: s => 'data,
-    tiers: array<(string, Tier.s => 'tier)>,
-    products: (~tier: 'tier, ~data: 'data) => array<ProductCatalog.productConfig>,
+    plans: array<(string, Plan.s => 'plan)>,
+    products: (~plan: 'plan, ~data: 'data) => array<ProductCatalog.productConfig>,
     termsOfServiceConsent?: bool,
   }
 
   let refField = "#subscription_ref"
-  let tierField = "#subscription_tier"
+  let planField = "#subscription_plan"
 
   let listSubscriptions = async (stripe, ~config, ~customerId=?) => {
     switch await stripe->Subscription.list({
@@ -938,14 +944,14 @@ module TieredSubscription = {
     }
   }
 
-  type hostedCheckoutSessionParams<'data, 'tier> = {
-    config: t<'data, 'tier>,
+  type hostedCheckoutSessionParams<'data, 'plan> = {
+    config: t<'data, 'plan>,
     successUrl: string,
     cancelUrl?: string,
     billingCycleAnchor?: int,
     interval?: Price.interval,
     data: 'data,
-    tier: 'tier,
+    plan: 'plan,
     description?: string,
     allowPromotionCodes?: bool,
   }
@@ -953,16 +959,16 @@ module TieredSubscription = {
   let createHostedCheckoutSession = async (stripe, params) => {
     let data = processData(params.data, ~config=params.config)
 
-    let tierMetadataFields = [tierField]
+    let planMetadataFields = [planField]
 
-    let tierSchema = S.union(
-      params.config.tiers->Js.Array2.map(((tierRef, tierConfig)) => {
+    let planSchema = S.union(
+      params.config.plans->Js.Array2.map(((planRef, planConfig)) => {
         S.object(s => {
           let matchesCounter = ref(-1)
-          s.tag(tierField, tierRef)
-          let tier = tierConfig({
+          s.tag(planField, planRef)
+          let plan = planConfig({
             metadata: (name, schema) => {
-              tierMetadataFields->Js.Array2.push(name)->ignore
+              planMetadataFields->Js.Array2.push(name)->ignore
               s.field(name, S.string->S.coerce(schema))
             },
             // We don't need the data in schema,
@@ -972,15 +978,15 @@ module TieredSubscription = {
               s.field(`#matches${matchesCounter.contents->Js.Int.toString}`, schema)
             },
           })
-          tier
+          plan
         })
       }),
     )
-    let rawTier: dict<string> = params.tier->S.reverseConvertOrThrow(tierSchema)->Obj.magic
+    let rawTier: dict<string> = params.plan->S.reverseConvertOrThrow(planSchema)->Obj.magic
 
-    let tierId = rawTier->Js.Dict.unsafeGet(tierField)
-    let products = switch params.config.products(~data=params.data, ~tier=params.tier) {
-    | [] => Js.Exn.raiseError(`Tier "${tierId}" doesn't have any products configured`)
+    let planId = rawTier->Js.Dict.unsafeGet(planField)
+    let products = switch params.config.products(~data=params.data, ~plan=params.plan) {
+    | [] => Js.Exn.raiseError(`Tier "${planId}" doesn't have any products configured`)
     | p => p
     }
 
@@ -1018,8 +1024,8 @@ module TieredSubscription = {
         `There's already an active "${params.config.ref}" subscription for ${data["primaryFields"]
           ->Js.Array2.map(name => `${name}=${data["dict"]->Js.Dict.unsafeGet(name)}`)
           ->Js.Array2.joinWith(", ")} with the "${subscription.metadata->Js.Dict.unsafeGet(
-            tierField,
-          )}" tier and id "${subscription.id}". Either update the existing subscription or cancel it and create a new one`,
+            planField,
+          )}" plan and id "${subscription.id}". Either update the existing subscription or cancel it and create a new one`,
       )
     }
 
@@ -1031,7 +1037,7 @@ module TieredSubscription = {
       )
 
     Js.log(
-      `Creating a new checkout session for subscription "${params.config.ref}" tier "${tierId}"...`,
+      `Creating a new checkout session for subscription "${params.config.ref}" plan "${planId}"...`,
     )
     let session = await stripe->Checkout.Session.create({
       mode: Checkout.Session.Subscription,
@@ -1046,7 +1052,7 @@ module TieredSubscription = {
         metadata: data["metadataFields"]
         ->Js.Array2.map(name => (name, data["dict"]->Js.Dict.unsafeGet(name)))
         ->Js.Array2.concat(
-          tierMetadataFields->Js.Array2.map(name => (name, rawTier->Js.Dict.unsafeGet(name))),
+          planMetadataFields->Js.Array2.map(name => (name, rawTier->Js.Dict.unsafeGet(name))),
         )
         ->Js.Dict.fromArray,
       },
@@ -1066,7 +1072,7 @@ module TieredSubscription = {
         | ([price], _) => price
         | (_, None) =>
           Js.Exn.raiseError(
-            `Product "${product.name}" has multiple prices but no interval specified. Use "interval" param to dynamically choose which price use for the tier`,
+            `Product "${product.name}" has multiple prices but no interval specified. Use "interval" param to dynamically choose which price use for the plan`,
           )
         | (_, Some(interval)) =>
           Js.Exn.raiseError(

@@ -379,11 +379,11 @@ var Checkout = {
   Session: Session
 };
 
-var Tier = {};
+var Plan = {};
 
 var refField = "#subscription_ref";
 
-var tierField = "#subscription_tier";
+var planField = "#subscription_plan";
 
 async function listSubscriptions(stripe, config, customerId) {
   var match = await stripe.subscriptions.list({
@@ -501,18 +501,18 @@ async function retrieveSubscription(stripe, config, data) {
 
 async function createHostedCheckoutSession(stripe, params) {
   var data = processData(params.data, params.config);
-  var tierMetadataFields = [tierField];
-  var tierSchema = S$RescriptSchema.union(params.config.tiers.map(function (param) {
-            var tierConfig = param[1];
-            var tierRef = param[0];
+  var planMetadataFields = [planField];
+  var planSchema = S$RescriptSchema.union(params.config.plans.map(function (param) {
+            var planConfig = param[1];
+            var planRef = param[0];
             return S$RescriptSchema.object(function (s) {
                         var matchesCounter = {
                           contents: -1
                         };
-                        s.tag(tierField, tierRef);
-                        return tierConfig({
+                        s.tag(planField, planRef);
+                        return planConfig({
                                     metadata: (function (name, schema) {
-                                        tierMetadataFields.push(name);
+                                        planMetadataFields.push(name);
                                         return s.f(name, S$RescriptSchema.coerce(S$RescriptSchema.string, schema));
                                       }),
                                     matches: (function (schema) {
@@ -522,10 +522,10 @@ async function createHostedCheckoutSession(stripe, params) {
                                   });
                       });
           }));
-  var rawTier = S$RescriptSchema.reverseConvertOrThrow(params.tier, tierSchema);
-  var tierId = rawTier[tierField];
-  var p = params.config.products(params.tier, params.data);
-  var products = p.length !== 0 ? p : Js_exn.raiseError("Tier \"" + tierId + "\" doesn't have any products configured");
+  var rawTier = S$RescriptSchema.reverseConvertOrThrow(params.plan, planSchema);
+  var planId = rawTier[planField];
+  var p = params.config.products(params.plan, params.data);
+  var products = p.length !== 0 ? p : Js_exn.raiseError("Tier \"" + planId + "\" doesn't have any products configured");
   var c = await internalRetrieveCustomer(stripe, data);
   var customer;
   if (c !== undefined) {
@@ -548,14 +548,14 @@ async function createHostedCheckoutSession(stripe, params) {
   if (subscription !== undefined) {
     Js_exn.raiseError("There's already an active \"" + params.config.ref + "\" subscription for " + data.primaryFields.map(function (name) {
                 return name + "=" + data.dict[name];
-              }).join(", ") + " with the \"" + subscription.metadata[tierField] + "\" tier and id \"" + subscription.id + "\". Either update the existing subscription or cancel it and create a new one");
+              }).join(", ") + " with the \"" + subscription.metadata[planField] + "\" plan and id \"" + subscription.id + "\". Either update the existing subscription or cancel it and create a new one");
   } else {
     console.log("Customer doesn't have an active \"" + params.config.ref + "\" subscription");
   }
   var productItems = await sync(stripe, {
         products: products
       }, Caml_option.some(usedCustomerMeters), params.interval);
-  console.log("Creating a new checkout session for subscription \"" + params.config.ref + "\" tier \"" + tierId + "\"...");
+  console.log("Creating a new checkout session for subscription \"" + params.config.ref + "\" plan \"" + planId + "\"...");
   var match = params.config.termsOfServiceConsent;
   var session = await stripe.checkout.sessions.create({
         mode: "subscription",
@@ -571,7 +571,7 @@ async function createHostedCheckoutSession(stripe, params) {
                               name,
                               data.dict[name]
                             ];
-                    }).concat(tierMetadataFields.map(function (name) {
+                    }).concat(planMetadataFields.map(function (name) {
                         return [
                                 name,
                                 rawTier[name]
@@ -588,7 +588,7 @@ async function createHostedCheckoutSession(stripe, params) {
               var len = prices.length;
               var lineItemPrice = len !== 1 ? (
                   len !== 0 ? (
-                      match !== undefined ? Js_exn.raiseError("Product \"" + product.name + "\" has multiple prices for interval \"" + match + "\"") : Js_exn.raiseError("Product \"" + product.name + "\" has multiple prices but no interval specified. Use \"interval\" param to dynamically choose which price use for the tier")
+                      match !== undefined ? Js_exn.raiseError("Product \"" + product.name + "\" has multiple prices for interval \"" + match + "\"") : Js_exn.raiseError("Product \"" + product.name + "\" has multiple prices but no interval specified. Use \"interval\" param to dynamically choose which price use for the plan")
                     ) : (
                       match !== undefined ? Js_exn.raiseError("Product \"" + product.name + "\" doesn't have prices for interval \"" + match + "\"") : Js_exn.raiseError("Product \"" + product.name + "\" doesn't have any prices")
                     )
@@ -618,10 +618,10 @@ async function createHostedCheckoutSession(stripe, params) {
   console.log("Successfully created a new checkout session");
 }
 
-var TieredSubscription = {
-  Tier: Tier,
+var Billing = {
+  Plan: Plan,
   refField: refField,
-  tierField: tierField,
+  planField: planField,
   listSubscriptions: listSubscriptions,
   retrieveCustomer: retrieveCustomer,
   retrieveSubscription: retrieveSubscription,
@@ -639,6 +639,6 @@ export {
   Customer ,
   Subscription ,
   Checkout ,
-  TieredSubscription ,
+  Billing ,
 }
 /* stripe Not a pure module */

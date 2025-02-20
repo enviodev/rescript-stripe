@@ -12,9 +12,9 @@ The package contains partial bindings for the Stripe NodeJs client.
 
 Please, create a PR if you need something missing.
 
-## Tiered Subscriptions as a code
+## Billing as a Config
 
-Describe a Tiered Subscription as a code and interact with Stripe API with the best DX possible.
+Describe your Billing as a config and interact with Stripe API with the best DX possible and Git history.
 
 ```rescript
 module CourseSubscription = {
@@ -23,19 +23,19 @@ module CourseSubscription = {
     courseName: string,
     courseId: string,
   }
-  type tier =
+  type plan =
     | Starter
     | Pro({withExtraSeats: bool})
 
   let config = {
-    Stripe.TieredSubscription.ref: "course",
+    Stripe.Billing.ref: "course",
     data: s => {
       userId: s.primary("user_id", S.string, ~customerLookup=true),
       courseId: s.primary("course_id", S.string),
       courseName: s.matches(S.string),
     },
     termsOfServiceConsent: true,
-    tiers: [
+    plans: [
       (
         "starter",
         s => {
@@ -51,8 +51,8 @@ module CourseSubscription = {
         },
       ),
     ],
-    products: (~tier, ~data) => {
-      switch tier {
+    products: (~plan, ~data) => {
+      switch plan {
       | Starter => [
           {
             name: data.courseName,
@@ -145,14 +145,14 @@ After you described the config, you can use it to interact with Stripe API.
 ### Create subscription
 
 ```rescript
-await stripe->Stripe.TieredSubscription.createHostedCheckoutSession({
+await stripe->Stripe.Billing.createHostedCheckoutSession({
   config: CourseSubscription.config,
   data: {
     userId: "dzakh",
     courseId: "rescript-schema-to-the-moon",
     courseName: "ReScript Schema to the Moon",
   },
-  tier: Starter,
+  plan: Starter,
   interval: Month,
   allowPromotionCodes: true,
   successUrl: `https://x.com/dzakh_dev`,
@@ -162,7 +162,7 @@ await stripe->Stripe.TieredSubscription.createHostedCheckoutSession({
 ### Retrieve customer
 
 ```rescript
-let customer = await stripe->Stripe.TieredSubscription.retrieveCustomer({
+let customer = await stripe->Stripe.Billing.retrieveCustomer({
   userId: "dzakh",
   courseId: "rescript-schema-to-the-moon",
   courseName: "ReScript Schema to the Moon",
@@ -172,7 +172,7 @@ let customer = await stripe->Stripe.TieredSubscription.retrieveCustomer({
 ### Retrieve subscription
 
 ```rescript
-let subscription = await stripe->Stripe.TieredSubscription.retrieveSubscription({
+let subscription = await stripe->Stripe.Billing.retrieveSubscription({
   userId: "dzakh",
   courseId: "rescript-schema-to-the-moon",
   courseName: "ReScript Schema to the Moon",
