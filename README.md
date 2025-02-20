@@ -179,6 +179,16 @@ let subscription = await stripe->Stripe.Billing.retrieveSubscription({
 }, ~config=CourseSubscription.config)
 ```
 
+### Retrieve subscription with customer
+
+```rescript
+let {subscription, customer} = await stripe->Stripe.Billing.retrieveSubscriptionWithCustomer({
+  userId: "dzakh",
+  courseId: "rescript-schema-to-the-moon",
+  courseName: "ReScript Schema to the Moon",
+}, ~config=CourseSubscription.config)
+```
+
 ### Get meter event name by reference
 
 ```rescript
@@ -198,4 +208,10 @@ let _ =
     ~meterRef="extra_seat",
     ~value=1,
   )
+```
+
+### Customer portal helpers
+
+```rescript
+let link = stripe->Stripe.CustomerPortal.prefillEmail(~link="https://customer.portal.com", ~email="stripe@customer.com")
 ```

@@ -734,6 +734,20 @@ module Subscription = {
   }
 }
 
+module CustomerPortal = {
+  %%private(
+    @val
+    external encodeURIComponent: string => string = "encodeURIComponent"
+  )
+
+  let prefillEmail = (~link, ~email=?) => {
+    switch email {
+    | Some(email) => `${link}?prefilled_email=${encodeURIComponent(email)}`
+    | None => link
+    }
+  }
+}
+
 module Checkout = {
   module Session = {
     type t = {
@@ -783,6 +797,11 @@ module Checkout = {
 }
 
 module Billing = {
+  type subscriptionWithCustomer = {
+    customer: option<Customer.t>,
+    subscription: option<Subscription.t>,
+  }
+
   module Plan = {
     type s = {
       metadata: 'v. (string, S.t<'v>) => 'v,
@@ -935,12 +954,32 @@ module Billing = {
     internalRetrieveCustomer(stripe, processData(data, ~config))
   }
 
-  let retrieveSubscription = async (stripe, ~config, data) => {
+  let retrieveSubscriptionWithCustomer = async (stripe, ~config, data) => {
     let processedData = processData(data, ~config)
     switch await internalRetrieveCustomer(stripe, processedData) {
     | Some(customer) =>
-      await internalRetrieveSubscription(stripe, processedData, ~customerId=customer.id, ~config)
-    | None => None
+      switch await internalRetrieveSubscription(
+        stripe,
+        processedData,
+        ~customerId=customer.id,
+        ~config,
+      ) {
+      | Some(subscription) => {customer: Some(customer), subscription: Some(subscription)}
+      | None => {
+          customer: Some(customer),
+          subscription: None,
+        }
+      }
+    | None => {
+        customer: None,
+        subscription: None,
+      }
+    }
+  }
+
+  let retrieveSubscription = async (stripe, ~config, data) => {
+    switch await retrieveSubscriptionWithCustomer(stripe, ~config, data) {
+    | {subscription} => subscription
     }
   }
 

@@ -373,6 +373,18 @@ var Subscription = {
   reportMeterUsage: reportMeterUsage
 };
 
+function prefillEmail(link, email) {
+  if (email !== undefined) {
+    return link + "?prefilled_email=" + encodeURIComponent(email);
+  } else {
+    return link;
+  }
+}
+
+var CustomerPortal = {
+  prefillEmail: prefillEmail
+};
+
 var Session = {};
 
 var Checkout = {
@@ -490,13 +502,31 @@ function retrieveCustomer(stripe, config, data) {
   return internalRetrieveCustomer(stripe, processData(data, config));
 }
 
-async function retrieveSubscription(stripe, config, data) {
+async function retrieveSubscriptionWithCustomer(stripe, config, data) {
   var processedData = processData(data, config);
   var customer = await internalRetrieveCustomer(stripe, processedData);
-  if (customer !== undefined) {
-    return await internalRetrieveSubscription(stripe, processedData, config, customer.id, undefined);
+  if (customer === undefined) {
+    return {
+            customer: undefined,
+            subscription: undefined
+          };
   }
-  
+  var subscription = await internalRetrieveSubscription(stripe, processedData, config, customer.id, undefined);
+  if (subscription !== undefined) {
+    return {
+            customer: customer,
+            subscription: subscription
+          };
+  } else {
+    return {
+            customer: customer,
+            subscription: undefined
+          };
+  }
+}
+
+async function retrieveSubscription(stripe, config, data) {
+  return (await retrieveSubscriptionWithCustomer(stripe, config, data)).subscription;
 }
 
 async function createHostedCheckoutSession(stripe, params) {
@@ -624,6 +654,7 @@ var Billing = {
   planField: planField,
   listSubscriptions: listSubscriptions,
   retrieveCustomer: retrieveCustomer,
+  retrieveSubscriptionWithCustomer: retrieveSubscriptionWithCustomer,
   retrieveSubscription: retrieveSubscription,
   createHostedCheckoutSession: createHostedCheckoutSession
 };
@@ -638,6 +669,7 @@ export {
   ProductCatalog ,
   Customer ,
   Subscription ,
+  CustomerPortal ,
   Checkout ,
   Billing ,
 }
