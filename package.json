@@ -1,6 +1,7 @@
 {
   "name": "rescript-stripe",
-  "version": "0.1.0",
+  "description": "💸 Stripe Billing as a Config",
+  "version": "0.2.0",
   "keywords": [
     "rescript",
     "stripe",
