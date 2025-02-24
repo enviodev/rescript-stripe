@@ -1,4 +1,6 @@
 module Stdlib = {
+  external magic: 'a => 'b = "%identity"
+
   module Promise = {
     type t<+'a> = promise<'a>
 
@@ -391,7 +393,7 @@ module ProductCatalog = {
         | (_, None) => fieldsToSync.unitLabel = Some("")
         }
 
-        let fieldNamesToSync = Js.Dict.keys(fieldsToSync->Obj.magic)
+        let fieldNamesToSync = Js.Dict.keys(fieldsToSync->Stdlib.magic)
 
         if fieldNamesToSync->Js.Array2.length > 0 {
           Js.log(
@@ -796,36 +798,89 @@ module Checkout = {
   }
 }
 
-module Billing = {
-  type subscriptionWithCustomer = {
-    customer: option<Customer.t>,
-    subscription: option<Subscription.t>,
+module Webhook = {
+  type data<'object> = {object: 'object}
+
+  type genericEvent<'object> = {
+    id: string,
+    @as("type")
+    type_: string,
+    object: string,
+    @as("api_version")
+    apiVersion: string,
+    created: int,
+    livemode: bool,
+    @as("pending_webhooks")
+    pendingWebhooks: int,
+    data: data<'object>,
   }
 
+  type event =
+    | CustomerSubscriptionCreated(genericEvent<Subscription.t>)
+    | CustomerSubscriptionUpdated(genericEvent<Subscription.t>)
+    | CustomerSubscriptionDeleted(genericEvent<Subscription.t>)
+    | Unknown(genericEvent<dict<unknown>>)
+
+  @scope("webhooks") @send
+  external constructEvent: (
+    stripe,
+    ~body: string,
+    ~sig: string,
+    ~secret: string,
+  ) => genericEvent<dict<unknown>> = "constructEvent"
+  let constructEvent = (stripe, ~body, ~sig, ~secret) => {
+    try {
+      let event = constructEvent(stripe, ~body, ~sig, ~secret)
+      switch (event->Stdlib.magic)["type"] {
+      | "customer.subscription.created" => CustomerSubscriptionCreated(event->Obj.magic)
+      | "customer.subscription.updated" => CustomerSubscriptionUpdated(event->Obj.magic)
+      | "customer.subscription.deleted" => CustomerSubscriptionDeleted(event->Obj.magic)
+      | _ => Unknown(event)
+      }->Ok
+    } catch {
+    | Js.Exn.Error(err) => Error(err->Js.Exn.message->Belt.Option.getUnsafe)
+    }
+  }
+}
+
+type metadataRef<'config, 'value> = private {
+  fieldName: string,
+  schema: S.t<'value>,
+  coereced: S.t<'value>,
+}
+
+module Billing = {
   module Plan = {
-    type s = {
-      metadata: 'v. (string, S.t<'v>) => 'v,
+    type s<'config> = {
+      field: 'v. metadataRef<'config, 'v> => 'v,
+      tag: 'v. (metadataRef<'config, 'v>, 'v) => unit,
       matches: 'v. S.t<'v> => 'v,
     }
   }
 
-  type s = {
-    primary: 'v. (string, S.t<'v>, ~customerLookup: bool=?) => 'v,
-    metadata: 'v. (string, S.t<'v>) => 'v,
+  type s<'config> = {
+    primary: 'v. (metadataRef<'config, 'v>, ~customerLookup: bool=?) => 'v,
+    field: 'v. metadataRef<'config, 'v> => 'v,
   }
 
-  type t<'data, 'plan> = {
+  type rec t<'data, 'plan> = {
     ref: string,
-    data: s => 'data,
-    plans: array<(string, Plan.s => 'plan)>,
+    data: s<t<'data, 'plan>> => 'data,
+    plans: array<(string, Plan.s<t<'data, 'plan>> => 'plan)>,
     products: (~plan: 'plan, ~data: 'data) => array<ProductCatalog.productConfig>,
     termsOfServiceConsent?: bool,
+  }
+
+  type subscription<'config> = private {...Subscription.t}
+  type subscriptionWithCustomer<'config> = {
+    customer: option<Customer.t>,
+    subscription: option<subscription<'config>>,
   }
 
   let refField = "#subscription_ref"
   let planField = "#subscription_plan"
 
-  let listSubscriptions = async (stripe, ~config, ~customerId=?) => {
+  let listSubscriptions = async (stripe, ~config: t<'data, 'plan>, ~customerId=?) => {
     switch await stripe->Subscription.list({
       customer: ?customerId,
       limit: 100,
@@ -833,9 +888,11 @@ module Billing = {
     | {hasMore: true} =>
       Js.Exn.raiseError(`Found more than 100 subscriptions, which is not supported yet`)
     | {data: subscriptions} =>
-      subscriptions->Js.Array2.filter(subscription => {
+      subscriptions
+      ->Js.Array2.filter(subscription => {
         subscription.metadata->Js.Dict.unsafeGet(refField) === config.ref
       })
+      ->(Stdlib.magic: array<Subscription.t> => array<subscription<t<'data, 'plan>>>)
     }
   }
 
@@ -847,17 +904,17 @@ module Billing = {
       let schema = S.object(s => {
         s.tag(refField, config.ref)
         config.data({
-          primary: (name, schema, ~customerLookup=false) => {
-            primaryFields->Js.Array2.push(name)->ignore
-            metadataFields->Js.Array2.push(name)->ignore
+          primary: ({fieldName, coereced}, ~customerLookup=false) => {
+            primaryFields->Js.Array2.push(fieldName)->ignore
+            metadataFields->Js.Array2.push(fieldName)->ignore
             if customerLookup {
-              customerLookupFields->Js.Array2.push(name)->ignore
+              customerLookupFields->Js.Array2.push(fieldName)->ignore
             }
-            s.field(name, S.string->S.coerce(schema))
+            s.field(fieldName, coereced)
           },
-          metadata: (name, schema) => {
-            metadataFields->Js.Array2.push(name)->ignore
-            s.field(name, S.string->S.coerce(schema))
+          field: ({fieldName, coereced}) => {
+            metadataFields->Js.Array2.push(fieldName)->ignore
+            s.field(fieldName, coereced)
           },
         })
       })
@@ -867,7 +924,7 @@ module Billing = {
           "The data schema must define at least one primary field with ~customerLookup=true",
         )
       }
-      let dict: dict<string> = data->S.reverseConvertOrThrow(schema)->Obj.magic
+      let dict: dict<string> = data->S.reverseConvertOrThrow(schema)->Stdlib.magic
       {
         "value": data,
         "dict": dict,
@@ -919,6 +976,7 @@ module Billing = {
           ->Js.Int.toString} subscriptions for the customer. Validating that the new subscription is not already active...`,
       )
       subscriptions->Js.Array2.find(subscription => {
+        // FIXME: This shouldn't be stopped by .find
         switch usedMetersAcc {
         | Some(usedMetersAcc) =>
           subscription.items.data->Belt.Array.forEach(item => {
@@ -1006,9 +1064,14 @@ module Billing = {
           let matchesCounter = ref(-1)
           s.tag(planField, planRef)
           let plan = planConfig({
-            metadata: (name, schema) => {
-              planMetadataFields->Js.Array2.push(name)->ignore
-              s.field(name, S.string->S.coerce(schema))
+            // TODO: Validate that all plans have the same metadata fields if they aren't marked as optional
+            field: ({fieldName, coereced}) => {
+              planMetadataFields->Js.Array2.push(fieldName)->ignore
+              s.field(fieldName, coereced)
+            },
+            tag: ({fieldName, coereced}, value) => {
+              planMetadataFields->Js.Array2.push(fieldName)->ignore
+              let _ = s.field(fieldName, coereced->S.coerce(S.literal(value)))
             },
             // We don't need the data in schema,
             // only for typesystem
@@ -1021,7 +1084,7 @@ module Billing = {
         })
       }),
     )
-    let rawTier: dict<string> = params.plan->S.reverseConvertOrThrow(planSchema)->Obj.magic
+    let rawTier: dict<string> = params.plan->S.reverseConvertOrThrow(planSchema)->Stdlib.magic
 
     let planId = rawTier->Js.Dict.unsafeGet(planField)
     let products = switch params.config.products(~data=params.data, ~plan=params.plan) {
@@ -1129,7 +1192,38 @@ module Billing = {
         }
       }),
     })
-    Js.log(session)
-    Js.log("Successfully created a new checkout session")
+    Js.log(
+      `Successfully created a new checkout session. Session ID: ${session.id}.${switch session.url {
+        | Value(url) => ` Url: ${url}`
+        | Null => ""
+        }}
+    `,
+    )
+    session
+  }
+
+  let verify = (subscription: Subscription.t, ~config: t<'data, 'plan>): option<
+    subscription<t<'data, 'plan>>,
+  > => {
+    if subscription.metadata->Js.Dict.unsafeGet(refField) === config.ref {
+      Some(subscription->Stdlib.magic)
+    } else {
+      None
+    }
+  }
+}
+
+module Metadata = {
+  let ref = (fieldName: string, schema: S.t<'value>): metadataRef<'config, 'value> => {
+    {"fieldName": fieldName, "schema": schema, "coereced": S.string->S.coerce(schema)}->Stdlib.magic
+  }
+
+  let get = (
+    subscription: Billing.subscription<Billing.t<'data, 'plan>>,
+    metadataRef: metadataRef<Billing.t<'data, 'plan>, 'value>,
+  ): 'value => {
+    (subscription->Stdlib.magic)["metadata"]
+    ->Js.Dict.unsafeGet(metadataRef.fieldName)
+    ->S.parseOrThrow(metadataRef.schema)
   }
 }

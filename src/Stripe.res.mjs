@@ -391,6 +391,57 @@ var Checkout = {
   Session: Session
 };
 
+function constructEvent(stripe, body, sig, secret) {
+  try {
+    var $$event = stripe.webhooks.constructEvent(body, sig, secret);
+    var match = $$event.type;
+    var tmp;
+    switch (match) {
+      case "customer.subscription.created" :
+          tmp = {
+            TAG: "CustomerSubscriptionCreated",
+            _0: $$event
+          };
+          break;
+      case "customer.subscription.deleted" :
+          tmp = {
+            TAG: "CustomerSubscriptionDeleted",
+            _0: $$event
+          };
+          break;
+      case "customer.subscription.updated" :
+          tmp = {
+            TAG: "CustomerSubscriptionUpdated",
+            _0: $$event
+          };
+          break;
+      default:
+        tmp = {
+          TAG: "Unknown",
+          _0: $$event
+        };
+    }
+    return {
+            TAG: "Ok",
+            _0: tmp
+          };
+  }
+  catch (raw_err){
+    var err = Caml_js_exceptions.internalToOCamlException(raw_err);
+    if (err.RE_EXN_ID === Js_exn.$$Error) {
+      return {
+              TAG: "Error",
+              _0: err._1.message
+            };
+    }
+    throw err;
+  }
+}
+
+var Webhook = {
+  constructEvent: constructEvent
+};
+
 var Plan = {};
 
 var refField = "#subscription_ref";
@@ -418,18 +469,20 @@ function processData(data, config) {
   var schema = S$RescriptSchema.object(function (s) {
         s.tag(refField, config.ref);
         return config.data({
-                    primary: (function (name, schema, customerLookupOpt) {
-                        var customerLookup = customerLookupOpt !== undefined ? customerLookupOpt : false;
-                        primaryFields.push(name);
-                        metadataFields.push(name);
+                    primary: (function (param, $staropt$star) {
+                        var fieldName = param.fieldName;
+                        var customerLookup = $staropt$star !== undefined ? $staropt$star : false;
+                        primaryFields.push(fieldName);
+                        metadataFields.push(fieldName);
                         if (customerLookup) {
-                          customerLookupFields.push(name);
+                          customerLookupFields.push(fieldName);
                         }
-                        return s.f(name, S$RescriptSchema.coerce(S$RescriptSchema.string, schema));
+                        return s.f(fieldName, param.coereced);
                       }),
-                    metadata: (function (name, schema) {
-                        metadataFields.push(name);
-                        return s.f(name, S$RescriptSchema.coerce(S$RescriptSchema.string, schema));
+                    field: (function (param) {
+                        var fieldName = param.fieldName;
+                        metadataFields.push(fieldName);
+                        return s.f(fieldName, param.coereced);
                       })
                   });
       });
@@ -541,9 +594,15 @@ async function createHostedCheckoutSession(stripe, params) {
                         };
                         s.tag(planField, planRef);
                         return planConfig({
-                                    metadata: (function (name, schema) {
-                                        planMetadataFields.push(name);
-                                        return s.f(name, S$RescriptSchema.coerce(S$RescriptSchema.string, schema));
+                                    field: (function (param) {
+                                        var fieldName = param.fieldName;
+                                        planMetadataFields.push(fieldName);
+                                        return s.f(fieldName, param.coereced);
+                                      }),
+                                    tag: (function (param, value) {
+                                        var fieldName = param.fieldName;
+                                        planMetadataFields.push(fieldName);
+                                        s.f(fieldName, S$RescriptSchema.coerce(param.coereced, S$RescriptSchema.literal(value)));
                                       }),
                                     matches: (function (schema) {
                                         matchesCounter.contents = matchesCounter.contents + 1 | 0;
@@ -644,8 +703,18 @@ async function createHostedCheckoutSession(stripe, params) {
               }
             })
       });
-  console.log(session);
-  console.log("Successfully created a new checkout session");
+  var url = session.url;
+  var tmp;
+  tmp = url === null ? "" : " Url: " + url;
+  console.log("Successfully created a new checkout session. Session ID: " + session.id + "." + tmp + "\n    ");
+  return session;
+}
+
+function verify(subscription, config) {
+  if (subscription.metadata[refField] === config.ref) {
+    return subscription;
+  }
+  
 }
 
 var Billing = {
@@ -656,7 +725,25 @@ var Billing = {
   retrieveCustomer: retrieveCustomer,
   retrieveSubscriptionWithCustomer: retrieveSubscriptionWithCustomer,
   retrieveSubscription: retrieveSubscription,
-  createHostedCheckoutSession: createHostedCheckoutSession
+  createHostedCheckoutSession: createHostedCheckoutSession,
+  verify: verify
+};
+
+function ref(fieldName, schema) {
+  return {
+          fieldName: fieldName,
+          schema: schema,
+          coereced: S$RescriptSchema.coerce(S$RescriptSchema.string, schema)
+        };
+}
+
+function get(subscription, metadataRef) {
+  return S$RescriptSchema.parseOrThrow(subscription.metadata[metadataRef.fieldName], metadataRef.schema);
+}
+
+var Metadata = {
+  ref: ref,
+  get: get
 };
 
 export {
@@ -671,6 +758,8 @@ export {
   Subscription ,
   CustomerPortal ,
   Checkout ,
+  Webhook ,
   Billing ,
+  Metadata ,
 }
 /* stripe Not a pure module */
