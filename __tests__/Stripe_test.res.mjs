@@ -2,11 +2,8 @@
 
 import Ava from "ava";
 
-Ava("foo", (function (t) {
-        t.pass();
-      }));
+Ava("foo", t => {
+  t.pass();
+});
 
-export {
-  
-}
 /*  Not a pure module */

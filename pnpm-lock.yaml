@@ -9,21 +9,21 @@ importers:
   .:
     dependencies:
       rescript-schema:
-        specifier: ^9.3.0
-        version: 9.3.0(rescript@11.1.4)
+        specifier: ^9.3.0-rescript12.0
+        version: 9.3.0(rescript@12.0.0-alpha.8)
       stripe:
-        specifier: ^17.6.0
-        version: 17.6.0
+        specifier: ^17.7.0
+        version: 17.7.0
     devDependencies:
       '@dzakh/rescript-ava':
         specifier: ^3.1.0
-        version: 3.1.0(ava@6.2.0)(rescript@11.1.4)
+        version: 3.1.0(ava@6.2.0)(rescript@12.0.0-alpha.8)
       ava:
         specifier: ^6.2.0
         version: 6.2.0
       rescript:
-        specifier: 11.1.4
-        version: 11.1.4
+        specifier: 12.0.0-alpha.8
+        version: 12.0.0-alpha.8
 
 packages:
 
@@ -637,9 +637,9 @@ packages:
       rescript:
         optional: true
 
-  rescript@11.1.4:
-    resolution: {integrity: sha512-0bGU0bocihjSC6MsE3TMjHjY0EUpchyrREquLS8VsZ3ohSMD+VHUEwimEfB3kpBI1vYkw3UFZ3WD8R28guz/Vw==}
-    engines: {node: '>=10'}
+  rescript@12.0.0-alpha.8:
+    resolution: {integrity: sha512-I2YQ0vECymKY29j+/h51Z2A//0DgLf7g9mx5sNaWwR5fwrwTNzHS0MGIKiGfix+xJwLRteh4ighAqKeMWVQdjg==}
+    engines: {node: '>=18'}
     hasBin: true
 
   resolve-cwd@3.0.0:
@@ -733,8 +733,8 @@ packages:
     resolution: {integrity: sha512-iq6eVVI64nQQTRYq2KtEg2d2uU7LElhTJwsH4YzIHZshxlgZms/wIc4VoDQTlG/IvVIrBKG06CrZnp0qv7hkcQ==}
     engines: {node: '>=12'}
 
-  stripe@17.6.0:
-    resolution: {integrity: sha512-+HB6+SManp0gSRB0dlPmXO+io18krlAe0uimXhhIkL/RG/VIRigkfoM3QDJPkqbuSW0XsA6uzsivNCJU1ELEDA==}
+  stripe@17.7.0:
+    resolution: {integrity: sha512-aT2BU9KkizY9SATf14WhhYVv2uOapBWX0OFWF4xvcj1mPaNotlSc2CsxpS4DS46ZueSppmCF5BX1sNYBtwBvfw==}
     engines: {node: '>=12.*'}
 
   supertap@3.0.1:
@@ -819,10 +819,10 @@ packages:
 
 snapshots:
 
-  '@dzakh/rescript-ava@3.1.0(ava@6.2.0)(rescript@11.1.4)':
+  '@dzakh/rescript-ava@3.1.0(ava@6.2.0)(rescript@12.0.0-alpha.8)':
     dependencies:
       ava: 6.2.0
-      rescript: 11.1.4
+      rescript: 12.0.0-alpha.8
 
   '@isaacs/cliui@8.0.2':
     dependencies:
@@ -1387,11 +1387,11 @@ snapshots:
 
   require-directory@2.1.1: {}
 
-  rescript-schema@9.3.0(rescript@11.1.4):
+  rescript-schema@9.3.0(rescript@12.0.0-alpha.8):
     optionalDependencies:
-      rescript: 11.1.4
+      rescript: 12.0.0-alpha.8
 
-  rescript@11.1.4: {}
+  rescript@12.0.0-alpha.8: {}
 
   resolve-cwd@3.0.0:
     dependencies:
@@ -1490,7 +1490,7 @@ snapshots:
     dependencies:
       ansi-regex: 6.1.0
 
-  stripe@17.6.0:
+  stripe@17.7.0:
     dependencies:
       '@types/node': 22.13.5
       qs: 6.14.0
