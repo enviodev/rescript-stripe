@@ -292,3 +292,24 @@ let default = RestNextJs.handler(route, async ({input}) => {
   })
 })
 ```
+
+### Create/Find Customer and Checkout Session for selected plan
+
+```rescript
+let session = await stripe->Stripe.Billing.createHostedCheckoutSession({
+  config: CourseSubscription.config,
+  data: {
+    userId: "dzakh",
+    courseId: "rescript-schema-to-the-moon",
+    courseName: "ReScript Schema to the Moon",
+  },
+  plan: Starter,
+  interval: Year,
+  allowPromotionCodes: true,
+  successUrl: `https://myapp.com/success`,
+})
+Console.log(session.url)
+```
+
+> 🧠 It'll throw if the subscription already exist
+> 🧠 Customer, products, prices, meters are automatically created when they are not found
