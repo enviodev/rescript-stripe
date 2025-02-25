@@ -63,6 +63,10 @@ module Stdlib = {
     }`)
   }
 
+  module Array = {
+    let last = array => array->Js.Array2.unsafe_get(array->Js.Array2.length - 1)
+  }
+
   module Set = {
     type t<'value>
 
@@ -114,9 +118,22 @@ module Stdlib = {
 
 type stripe
 
-@module("stripe") @new external make: string => stripe = "default"
+@module("stripe") @new
+external make: (string, @as(json`{"telemetry": false}`) _) => stripe = "default"
 // Prevent "stripe" import in the user's code
 let make = make
+
+type objectWithMetadata = {
+  id: string,
+  metadata: dict<string>,
+}
+
+type metadataLookupCache = {
+  mutable hasMore: bool,
+  // Prevent race conditions for updating cache
+  mutable lock: int,
+  mutable items: array<objectWithMetadata>,
+}
 
 type page<'item> = {
   object: string,
@@ -615,6 +632,7 @@ module Customer = {
     metadata: dict<string>,
     email: Js.Null.t<string>,
     name: Js.Null.t<string>,
+    deleted?: bool,
   }
 
   type createParams = {
@@ -632,6 +650,186 @@ module Customer = {
   }
   @scope("customers") @send
   external search: (stripe, searchParams) => promise<page<t>> = "search"
+
+  type listParams = {
+    email?: string,
+    @as("ending_before")
+    endingBefore?: string,
+    @as("starting_after")
+    startingAfter?: string,
+    limit?: int,
+    @as("test_clock")
+    testClock?: bool,
+  }
+  @scope("customers") @send
+  external list: (stripe, listParams) => promise<page<t>> = "list"
+
+  @scope("customers") @send
+  external retrieve: (stripe, string) => promise<t> = "retrieve"
+
+  %%private(
+    let cache = {
+      hasMore: true,
+      lock: 0,
+      items: [],
+    }
+  )
+
+  let findByMetadata = async (stripe: stripe, metadata: dict<string>) => {
+    let lock = cache.lock + 1
+    cache.lock = lock
+
+    let matches = switch Js.Dict.entries(metadata) {
+    | [] => _ => true
+    | [(key, value)] =>
+      (item: objectWithMetadata) => item.metadata->Js.Dict.unsafeGet(key) === value
+    | entries =>
+      item =>
+        entries->Js.Array2.every(((key, value)) => item.metadata->Js.Dict.unsafeGet(key) === value)
+    }
+
+    let updateCache = (data, ~hasMore, ~isCatchUp) => {
+      if cache.lock === lock {
+        if isCatchUp {
+          let newCacheItems = data->Js.Array2.map(item => {
+            id: item.id,
+            metadata: item.metadata,
+          })
+          cache.items = newCacheItems->Js.Array2.concat(cache.items)
+        } else {
+          cache.hasMore = hasMore
+          data->Js.Array2.forEach(item => {
+            cache.items
+            ->Js.Array2.push({
+              id: item.id,
+              metadata: item.metadata,
+            })
+            ->ignore
+          })
+        }
+      }
+    }
+
+    let rec lookup = async (~startingAfter) => {
+      let page = await stripe->list({
+        limit: 1000,
+        ?startingAfter,
+      })
+      updateCache(page.data, ~hasMore=page.hasMore, ~isCatchUp=false)
+      let match =
+        page.data
+        ->(Stdlib.magic: array<t> => array<objectWithMetadata>)
+        ->Js.Array2.find(matches)
+        ->(Stdlib.magic: option<objectWithMetadata> => option<t>)
+
+      switch match {
+      | Some(_) => match
+      | None =>
+        if page.hasMore {
+          await lookup(~startingAfter=Some((page.data->Stdlib.Array.last).id))
+        } else {
+          None
+        }
+      }
+    }
+
+    let catchUpToCache = async (~endingBefore) => {
+      let data = await (
+        stripe
+        ->list({
+          limit: 100,
+          endingBefore,
+        })
+        ->Obj.magic
+      )["autoPagingToArray"]({limit: 10000})
+      if data->Js.Array2.length === 10000 {
+        Js.Exn.raiseError("Too many new customers to cache.")
+      }
+      updateCache(data, ~hasMore=false, ~isCatchUp=true)
+      data
+      ->(Stdlib.magic: array<t> => array<objectWithMetadata>)
+      ->Js.Array2.find(matches)
+      ->(Stdlib.magic: option<objectWithMetadata> => option<t>)
+    }
+
+    switch cache.items {
+    | [] => {
+        Js.log2(
+          "Customer metadata lookup cache is empty. Looking for customers on server...",
+          metadata,
+        )
+        let c = await lookup(~startingAfter=None)
+        Js.log2(`Finished looking for customers by metadata`, metadata)
+        c
+      }
+    | items =>
+      Js.log2("Searching for customer by metadata in cache", metadata)
+      switch cache.items->Js.Array2.find(matches) {
+      | Some(item) => {
+          Js.log2(
+            `Successfully found Customer ID "${item.id}" by metadata in cache. Retrieving data...`,
+            metadata,
+          )
+          let customer = await stripe->retrieve(item.id)
+          let isValid = switch customer {
+          | {deleted: true} => false
+          | item => matches(item->(Stdlib.magic: t => objectWithMetadata))
+          }
+          Js.log2(
+            `Customer ID "${item.id}" ${switch customer {
+              | {deleted: true} => "is deleted"
+              | _ =>
+                isValid ? "matches metadata lookup. Returning!" : "doesn't match cached metadata"
+              }}`,
+            metadata,
+          )
+          if isValid {
+            Some(customer)
+          } else {
+            let indexInCache = cache.items->Js.Array2.findIndex(item => item.id === customer.id)
+            if indexInCache !== -1 {
+              switch customer {
+              | {deleted: true} =>
+                let _ = cache.items->Js.Array2.removeCountInPlace(~pos=indexInCache, ~count=1)
+              | _ =>
+                cache.items->Js.Array2.unsafe_set(
+                  indexInCache,
+                  {
+                    id: customer.id,
+                    metadata: customer.metadata,
+                  },
+                )
+              }
+            }
+            None
+          }
+        }
+      | None =>
+        Js.log2(
+          "Customer by metadata isn't found in cache. Requesting newly created customers...",
+          metadata,
+        )
+        switch await catchUpToCache(~endingBefore=(items->Js.Array2.unsafe_get(0)).id) {
+        | Some(customer) as match => {
+            Js.log2(`Successfully found customer "${customer.id}" by metadata`, metadata)
+            match
+          }
+        | None if cache.hasMore =>
+          Js.log2(
+            `Any new customer doesn't match metadata. Looking for older customers on server...`,
+            metadata,
+          )
+          let c = await lookup(~startingAfter=Some((cache.items->Stdlib.Array.last).id))
+          Js.log2(`Finished looking for customers by metadata`, metadata)
+          c
+        | None => {
+            Js.log2(`Customer by metadata isn't found`, metadata)
+            None
+          }
+        }
+      }
+    }
+  }
 }
 
 module Subscription = {
@@ -925,37 +1123,19 @@ module Billing = {
         )
       }
       let dict: dict<string> = data->S.reverseConvertOrThrow(schema)->Stdlib.magic
+
+      let customerMetadata = Js.Dict.empty()
+      customerLookupFields->Js.Array2.forEach(name => {
+        customerMetadata->Js.Dict.set(name, dict->Js.Dict.unsafeGet(name))
+      })
+
       {
         "value": data,
         "dict": dict,
         "schema": schema,
         "primaryFields": primaryFields,
-        "customerLookupFields": customerLookupFields,
+        "customerMetadata": customerMetadata,
         "metadataFields": metadataFields,
-      }
-    }
-
-    let internalRetrieveCustomer = async (stripe, data) => {
-      let customerSearchQuery =
-        data["customerLookupFields"]
-        ->Js.Array2.map(name => {
-          `metadata["${name}"]:"${data["dict"]->Js.Dict.unsafeGet(name)}"`
-        })
-        ->Js.Array2.joinWith("AND")
-      Js.log(`Searching for an existing customer with query: ${customerSearchQuery}`)
-      switch await stripe->Customer.search({
-        query: customerSearchQuery,
-        limit: 2,
-      }) {
-      | {data: [c]} => {
-          Js.log(`Successfully found customer with id: ${c.id}`)
-          Some(c)
-        }
-      | {data: []} =>
-        Js.log(`No customer found`)
-        None
-      | {data: _} =>
-        Js.Exn.raiseError(`Found multiple customers for the search query: ${customerSearchQuery}`)
       }
     }
 
@@ -1009,12 +1189,12 @@ module Billing = {
   )
 
   let retrieveCustomer = (stripe, ~config, data) => {
-    internalRetrieveCustomer(stripe, processData(data, ~config))
+    stripe->Customer.findByMetadata(processData(data, ~config)["customerMetadata"])
   }
 
   let retrieveSubscriptionWithCustomer = async (stripe, ~config, data) => {
     let processedData = processData(data, ~config)
-    switch await internalRetrieveCustomer(stripe, processedData) {
+    switch await stripe->Customer.findByMetadata(processedData["customerMetadata"]) {
     | Some(customer) =>
       switch await internalRetrieveSubscription(
         stripe,
@@ -1092,18 +1272,14 @@ module Billing = {
     | p => p
     }
 
-    let customer = switch await stripe->internalRetrieveCustomer(data) {
+    let customer = switch await stripe->Customer.findByMetadata(data["customerMetadata"]) {
     | Some(c) => c
     | None => {
         Js.log(`Creating a new customer...`)
         let c = await Customer.create(
           stripe,
           {
-            metadata: data["customerLookupFields"]
-            ->Js.Array2.map(name => {
-              (name, data["dict"]->Js.Dict.unsafeGet(name))
-            })
-            ->Js.Dict.fromArray,
+            metadata: data["customerMetadata"],
           },
         )
         Js.log(`Successfully created a new customer with id: ${c.id}`)
