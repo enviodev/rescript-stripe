@@ -171,7 +171,7 @@ module Price = {
   @scope("prices") @send
   external update: (stripe, string, updateParams) => promise<t> = "update"
 
-  type listParams = {active?: bool, product?: string}
+  type listParams = {active?: bool, product?: string, limit?: int}
   @scope("prices") @send
   external list: (stripe, listParams) => promise<page<t>> = "list"
 }
@@ -323,7 +323,7 @@ module ProductCatalog = {
     }
 
     Console.log(`Searching for product "${productConfig.ref}" active prices...`)
-    let prices = await stripe->Price.list({product: product.id, active: true})
+    let prices = await stripe->Price.list({product: product.id, active: true, limit: 100})
     Console.log(
       `Found ${prices.data
         ->Array.length
@@ -414,8 +414,7 @@ module ProductCatalog = {
       await productConfig.prices
       ->Array.filter(priceConfig => {
         switch (interval, priceConfig.recurring) {
-        | (Some(expectedInterval), Metered({interval}))
-        | (Some(expectedInterval), Licensed({interval})) =>
+        | (Some(expectedInterval), Metered({interval}) | Licensed({interval})) =>
           interval === expectedInterval
         | (None, _) => true
         }
@@ -424,11 +423,19 @@ module ProductCatalog = {
         let existingPrice = prices.data->Array.find(price => {
           let isPriceInSync =
             priceConfig.currency === price.currency &&
-            switch (priceConfig.lookupKey, price.lookupKey) {
-            | (Some(true), Value(lookupKey)) => priceConfig.ref === lookupKey
-            | (Some(true), Null)
-            | (_, Value(_)) => false
-            | (_, Null) => true
+            if (
+              // Don't check the lookup key for meter price copies
+              price.metadata->Dict.getUnsafe("#meter_ref") ===
+                price.metadata->Dict.getUnsafe("#meter_event_name")
+            ) {
+              switch (priceConfig.lookupKey, price.lookupKey) {
+              | (Some(true), Value(lookupKey)) => priceConfig.ref === lookupKey
+              | (Some(true), Null)
+              | (_, Value(_)) => false
+              | (_, Null) => true
+              }
+            } else {
+              true
             } &&
             Null.Value(priceConfig.unitAmountInCents) === price.unitAmountInCents &&
             switch price.recurring {
@@ -452,7 +459,14 @@ module ProductCatalog = {
                 price.metadata->Dict.getUnsafe("#meter_ref") === ref &&
                 switch price.metadata->Dict.get("#meter_event_name") {
                 | None => false
-                | Some(meterEventName) => !(usedCustomerMeters->Set.has(meterEventName))
+                | Some(meterEventName) => {
+                    // We need to use a price with another meter in this case
+                    // To be able to count the creating subscription separately
+                    let hasAnotherSubscriptionWithTheSameMeter =
+                      usedCustomerMeters->Set.has(meterEventName)
+
+                    !hasAnotherSubscriptionWithTheSameMeter
+                  }
                 }
               }
             }
