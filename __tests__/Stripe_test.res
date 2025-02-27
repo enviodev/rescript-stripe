@@ -1,5 +1,40 @@
 open Ava
 
-test("foo", t => {
-  t->Assert.pass
+test("Calculate past usage", t => {
+  t->Assert.deepEqual(
+    Stripe.Billing.calculatePastUsageBill(
+      ~priceAmount=100,
+      ~startedAt=Date.fromString("2025-01-01"),
+      ~now=Date.fromString("2025-01-01"),
+      ~interval=Some(Month),
+    ),
+    0,
+  )
+  t->Assert.deepEqual(
+    Stripe.Billing.calculatePastUsageBill(
+      ~priceAmount=100,
+      ~startedAt=Date.fromString("2025-01-01"),
+      ~now=Date.fromString("2025-02-01"),
+      ~interval=Some(Month),
+    ),
+    100,
+  )
+  t->Assert.deepEqual(
+    Stripe.Billing.calculatePastUsageBill(
+      ~priceAmount=100,
+      ~startedAt=Date.fromString("2025-01-01"),
+      ~now=Date.fromString("2025-03-01"),
+      ~interval=Some(Month),
+    ),
+    200,
+  )
+  t->Assert.deepEqual(
+    Stripe.Billing.calculatePastUsageBill(
+      ~priceAmount=100,
+      ~startedAt=Date.fromString("2025-01-01"),
+      ~now=Date.fromString("2025-01-15"),
+      ~interval=Some(Month),
+    ),
+    45,
+  )
 })

@@ -248,7 +248,7 @@ module ProductCatalog = {
     ref: string,
     currency: currency,
     unitAmountInCents: int,
-    recurring: recurringConfig,
+    recurring?: recurringConfig,
     lookupKey?: bool,
   }
 
@@ -261,10 +261,45 @@ module ProductCatalog = {
 
   type syncedProduct = {
     product: Product.t,
-    prices: array<Price.t>,
+    price: Price.t,
   }
 
   type t = {products: array<productConfig>}
+
+  let getPriceConfig = (productConfig: productConfig, ~interval=?) => {
+    switch productConfig.prices {
+    // Allow to have a single non-recurring price
+    // This is to support one-time payment with a subscription
+    | [{recurring: ?None} as price] => price
+    | _ =>
+      switch (
+        productConfig.prices->Array.filter(priceConfig => {
+          switch (interval, priceConfig.recurring) {
+          | (Some(expectedInterval), Some(Metered({interval}) | Licensed({interval}))) =>
+            interval === expectedInterval
+          | (Some(_), None) => false
+          | (None, _) => true
+          }
+        }),
+        interval,
+      ) {
+      | ([], None) => Exn.raiseError(`Product "${productConfig.name}" doesn't have any prices`)
+      | ([], Some(interval)) =>
+        Exn.raiseError(
+          `Product "${productConfig.name}" doesn't have prices for interval "${(interval :> string)}"`,
+        )
+      | ([price], _) => price
+      | (_, None) =>
+        Exn.raiseError(
+          `Product "${productConfig.name}" has multiple prices but no interval specified. Use "interval" param to dynamically choose which price use for the plan`,
+        )
+      | (_, Some(interval)) =>
+        Exn.raiseError(
+          `Product "${productConfig.name}" has multiple prices for interval "${(interval :> string)}"`,
+        )
+      }
+    }
+  }
 
   let syncProduct = async (
     stripe: stripe,
@@ -283,7 +318,9 @@ module ProductCatalog = {
         let p = await stripe->Product.create({
           name: productConfig.name,
           unitLabel: ?productConfig.unitLabel,
-          metadata: Dict.fromArray([("#product_ref", productConfig.ref)]),
+          metadata: dict{
+            "#product_ref": productConfig.ref,
+          },
         })
         Console.log(`Product "${productConfig.ref}" successfully created. Product ID: ${p.id}`)
         p
@@ -337,8 +374,9 @@ module ProductCatalog = {
 
     let createPriceFromConfig = async priceConfig => {
       let (metadata, recurring, transferLookupKey, nickname) = switch priceConfig.recurring {
-      | Licensed({interval}) => (None, {Price.interval: interval}, true, None)
-      | Metered({interval, ref}) => {
+      | None => (None, None, false, None)
+      | Some(Licensed({interval})) => (None, Some({Price.interval: interval}), true, None)
+      | Some(Metered({interval, ref})) => {
           let meters = switch meters {
           | Some(m) => m
           | None =>
@@ -378,17 +416,16 @@ module ProductCatalog = {
 
           (
             Some(
-              Dict.fromArray([
-                ("#meter_ref", ref),
-                ("#meter_event_name", eventName),
-                ("#price_ref", priceConfig.ref),
-              ]),
+              dict{
+                "#meter_ref": ref,
+                "#meter_event_name": eventName,
+              },
             ),
-            {
+            Some({
               interval,
               usageType: Metered,
               meter: meter.id,
-            },
+            }),
             ref === eventName,
             ref === eventName ? None : Some(`Copy with meter "${eventName}"`),
           )
@@ -405,97 +442,88 @@ module ProductCatalog = {
         },
         ?nickname,
         ?metadata,
-        recurring,
+        ?recurring,
         transferLookupKey,
       })
     }
 
-    let prices =
-      await productConfig.prices
-      ->Array.filter(priceConfig => {
-        switch (interval, priceConfig.recurring) {
-        | (Some(expectedInterval), Metered({interval}) | Licensed({interval})) =>
-          interval === expectedInterval
-        | (None, _) => true
-        }
-      })
-      ->Array.map(async priceConfig => {
-        let existingPrice = prices.data->Array.find(price => {
-          let isPriceInSync =
-            priceConfig.currency === price.currency &&
-            if (
-              // Don't check the lookup key for meter price copies
-              price.metadata->Dict.getUnsafe("#meter_ref") ===
-                price.metadata->Dict.getUnsafe("#meter_event_name")
-            ) {
-              switch (priceConfig.lookupKey, price.lookupKey) {
-              | (Some(true), Value(lookupKey)) => priceConfig.ref === lookupKey
-              | (Some(true), Null)
-              | (_, Value(_)) => false
-              | (_, Null) => true
-              }
-            } else {
-              true
-            } &&
-            Null.Value(priceConfig.unitAmountInCents) === price.unitAmountInCents &&
-            switch price.recurring {
-            | Null => false
-            | Value(priceRecurring) =>
-              switch priceConfig.recurring {
-              | Licensed({interval}) =>
-                priceRecurring.usageType === Licensed &&
-                priceRecurring.interval === interval &&
-                priceRecurring.meter === Null
-              | Metered({interval, ref}) =>
-                let usedCustomerMeters = switch usedCustomerMeters {
-                | Some(m) => m
-                | None =>
-                  Exn.raiseError(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`)
-                }
+    let priceConfig = getPriceConfig(productConfig, ~interval?)
 
-                priceRecurring.usageType === Metered &&
-                priceRecurring.interval === interval &&
-                priceRecurring.meter->Null.toOption->Option.isSome &&
-                price.metadata->Dict.getUnsafe("#meter_ref") === ref &&
-                switch price.metadata->Dict.get("#meter_event_name") {
-                | None => false
-                | Some(meterEventName) => {
-                    // We need to use a price with another meter in this case
-                    // To be able to count the creating subscription separately
-                    let hasAnotherSubscriptionWithTheSameMeter =
-                      usedCustomerMeters->Set.has(meterEventName)
+    let price = {
+      let existingPrice = prices.data->Array.find(price => {
+        let isPriceInSync =
+          priceConfig.currency === price.currency &&
+          if (
+            // Don't check the lookup key for meter price copies
+            price.metadata->Dict.getUnsafe("#meter_ref") ===
+              price.metadata->Dict.getUnsafe("#meter_event_name")
+          ) {
+            switch (priceConfig.lookupKey, price.lookupKey) {
+            | (Some(true), Value(lookupKey)) => priceConfig.ref === lookupKey
+            | (Some(true), Null)
+            | (_, Value(_)) => false
+            | (_, Null) => true
+            }
+          } else {
+            true
+          } &&
+          Null.Value(priceConfig.unitAmountInCents) === price.unitAmountInCents &&
+          switch (price.recurring, priceConfig.recurring) {
+          | (Null, None) => true
+          | (Null, Some(_))
+          | (Value(_), None) => false
+          | (Value(priceRecurring), Some(Licensed({interval}))) =>
+            priceRecurring.usageType === Licensed &&
+            priceRecurring.interval === interval &&
+            priceRecurring.meter === Null
+          | (Value(priceRecurring), Some(Metered({interval, ref}))) =>
+            let usedCustomerMeters = switch usedCustomerMeters {
+            | Some(m) => m
+            | None =>
+              Exn.raiseError(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`)
+            }
 
-                    !hasAnotherSubscriptionWithTheSameMeter
-                  }
-                }
+            priceRecurring.usageType === Metered &&
+            priceRecurring.interval === interval &&
+            priceRecurring.meter->Null.toOption->Option.isSome &&
+            price.metadata->Dict.getUnsafe("#meter_ref") === ref &&
+            switch price.metadata->Dict.get("#meter_event_name") {
+            | None => false
+            | Some(meterEventName) => {
+                // We need to use a price with another meter in this case
+                // To be able to count the creating subscription separately
+                let hasAnotherSubscriptionWithTheSameMeter =
+                  usedCustomerMeters->Set.has(meterEventName)
+
+                !hasAnotherSubscriptionWithTheSameMeter
               }
             }
-          isPriceInSync
-        })
-        switch existingPrice {
-        | Some(price) => {
-            Console.log(
-              `Found an existing price "${priceConfig.ref}" for product "${productConfig.ref}". Price ID: ${price.id}`,
-            )
-            price
           }
-        | None => {
-            Console.log(
-              `Price "${priceConfig.ref}" for product "${productConfig.ref}" is not in sync. Updating...`,
-            )
-            let price = await createPriceFromConfig(priceConfig)
-            Console.log(
-              `Price "${priceConfig.ref}" for product "${productConfig.ref}" successfully recreated with the new values. Price ID: ${price.id}`,
-            )
-            price
-          }
-        }
+        isPriceInSync
       })
-      ->Promise.all
+      switch existingPrice {
+      | Some(price) => {
+          Console.log(
+            `Found an existing price "${priceConfig.ref}" for product "${productConfig.ref}". Price ID: ${price.id}`,
+          )
+          price
+        }
+      | None => {
+          Console.log(
+            `Price "${priceConfig.ref}" for product "${productConfig.ref}" is not in sync. Updating...`,
+          )
+          let price = await createPriceFromConfig(priceConfig)
+          Console.log(
+            `Price "${priceConfig.ref}" for product "${productConfig.ref}" successfully recreated with the new values. Price ID: ${price.id}`,
+          )
+          price
+        }
+      }
+    }
 
     {
       product,
-      prices,
+      price,
     }
   }
 
@@ -503,7 +531,7 @@ module ProductCatalog = {
     let isMeterNeeded = productCatalog.products->Array.some(p =>
       p.prices->Array.some(p =>
         switch p.recurring {
-        | Metered(_) => true
+        | Some(Metered(_)) => true
         | _ => false
         }
       )
@@ -823,10 +851,10 @@ module Subscription = {
     | Some(meterEventName) =>
       let _ = await stripe->MeterEvent.create({
         eventName: meterEventName,
-        payload: Dict.fromArray([
-          ("value", value->Int.toString),
-          ("stripe_customer_id", subscription.customer),
-        ]),
+        payload: dict{
+          "value": value->Int.toString,
+          "stripe_customer_id": subscription.customer,
+        },
         ?timestamp,
         ?identifier,
       })
@@ -996,6 +1024,56 @@ module Billing = {
     }
   }
 
+  let calculatePastUsageBill = (
+    ~priceAmount,
+    ~startedAt,
+    ~now,
+    ~interval: option<Price.interval>,
+  ) => {
+    let monthlyPrice = switch interval {
+    | Some(Year) => priceAmount->Int.toFloat / 12.
+    | Some(Month) => priceAmount->Int.toFloat
+    | _ =>
+      Js.Exn.raiseError(
+        "The past usage bill only supports subscriptions with yearly or monthly intervals",
+      )
+    }
+
+    // Calculate months difference
+    let yearsDiff = now->Date.getFullYear - startedAt->Date.getFullYear
+    let monthsDiff = now->Date.getMonth - startedAt->Date.getMonth
+    let totalMonths = yearsDiff * 12 + monthsDiff
+
+    // Calculate days in partial first month
+    let daysInStartMonth =
+      Date.makeWithYMD(
+        ~year=startedAt->Date.getFullYear,
+        ~month=startedAt->Date.getMonth + 1,
+        ~date=0,
+      )->Date.getDate
+    let daysUsedFirstMonth = daysInStartMonth - startedAt->Date.getDate
+    let firstMonthFraction = daysUsedFirstMonth->Int.toFloat / daysInStartMonth->Int.toFloat
+
+    // Calculate days used in current month
+    let daysUsedCurrentMonth = now->Date.getDate
+    let daysInCurrentMonth =
+      Date.makeWithYMD(
+        ~year=now->Date.getFullYear,
+        ~month=now->Date.getMonth + 1,
+        ~date=0,
+      )->Date.getDate
+    let currentMonthFraction = daysUsedCurrentMonth->Int.toFloat / daysInCurrentMonth->Int.toFloat
+
+    // Calculate total amount
+    let fullMonths = totalMonths - 1
+    let totalAmount =
+      fullMonths->Int.toFloat * monthlyPrice +
+      firstMonthFraction * monthlyPrice +
+      currentMonthFraction * monthlyPrice
+
+    totalAmount->Int.fromFloat
+  }
+
   %%private(
     let processData = (data, ~config) => {
       let primaryFields = [refField]
@@ -1123,6 +1201,8 @@ module Billing = {
     }
   }
 
+  type pastUsage = {startedAt: Date.t}
+
   type hostedCheckoutSessionParams<'data, 'plan> = {
     config: t<'data, 'plan>,
     successUrl: string,
@@ -1132,6 +1212,7 @@ module Billing = {
     data: 'data,
     plan: 'plan,
     description?: string,
+    billPastUsage?: pastUsage,
     allowPromotionCodes?: bool,
   }
 
@@ -1166,12 +1247,69 @@ module Billing = {
         })
       }),
     )
-    let rawTier: dict<string> = params.plan->S.reverseConvertOrThrow(planSchema)->Obj.magic
+    let rawPlan: dict<string> = params.plan->S.reverseConvertOrThrow(planSchema)->Obj.magic
 
-    let planId = rawTier->Dict.getUnsafe(planField)
+    let now = Date.make()
+
+    let planId = rawPlan->Dict.getUnsafe(planField)
     let products = switch params.config.products(~data=params.data, ~plan=params.plan) {
-    | [] => Exn.raiseError(`Tier "${planId}" doesn't have any products configured`)
-    | p => p
+    | [] => Exn.raiseError(`Plan "${planId}" doesn't have any products configured`)
+    | products =>
+      switch params.billPastUsage {
+      | Some({startedAt}) =>
+        products
+        ->Array.filterMap(p => {
+          let priceConfig = ProductCatalog.getPriceConfig(p, ~interval=?params.interval)
+          switch priceConfig.recurring {
+          | None
+          | Some(Metered(_)) =>
+            None
+          | Some(Licensed(_)) =>
+            let pastUsageBill = calculatePastUsageBill(
+              ~priceAmount=priceConfig.unitAmountInCents,
+              ~startedAt,
+              ~now,
+              ~interval=params.interval,
+            )
+            if pastUsageBill === 0 {
+              None
+            } else {
+              Some(
+                (
+                  {
+                    name: `${p.name} from ${startedAt->Date.toLocaleDateStringWithLocaleAndOptions(
+                        "en-US",
+                        {dateStyle: #medium},
+                      )} to ${now->Date.toLocaleDateStringWithLocaleAndOptions(
+                        "en-US",
+                        {dateStyle: #medium},
+                      )}`,
+                    ref: `${p.ref}_from_${startedAt->Date.toLocaleDateStringWithLocaleAndOptions(
+                        "en-US",
+                        {dateStyle: #short},
+                      )}_to_${now->Date.toLocaleDateStringWithLocaleAndOptions(
+                        "en-US",
+                        {dateStyle: #short},
+                      )}`,
+                    prices: [
+                      {
+                        ref: priceConfig.ref,
+                        currency: priceConfig.currency,
+                        unitAmountInCents: pastUsageBill,
+                        // Explicitely set to None, since they must never be set for the case
+                        recurring: ?None,
+                        lookupKey: ?None,
+                      },
+                    ],
+                  }: ProductCatalog.productConfig
+                ),
+              )
+            }
+          }
+        })
+        ->Array.concat(products)
+      | None => products
+      }
     }
 
     let customer = switch await stripe->Customer.findByMetadata(data["customerMetadata"]) {
@@ -1231,30 +1369,14 @@ module Billing = {
         billingCycleAnchor: ?params.billingCycleAnchor,
         metadata: data["metadataFields"]
         ->Array.map(name => (name, data["dict"]->Dict.getUnsafe(name)))
-        ->Array.concat(planMetadataFields->Array.map(name => (name, rawTier->Dict.getUnsafe(name))))
+        ->Array.concat(planMetadataFields->Array.map(name => (name, rawPlan->Dict.getUnsafe(name))))
         ->Dict.fromArray,
       },
       allowPromotionCodes: ?params.allowPromotionCodes,
       successUrl: params.successUrl,
       cancelUrl: ?params.cancelUrl,
-      lineItems: productItems->Array.map(({prices, product}): Checkout.Session.lineItemParam => {
-        let lineItemPrice = switch (prices, params.interval) {
-        | ([], None) => Exn.raiseError(`Product "${product.name}" doesn't have any prices`)
-        | ([], Some(interval)) =>
-          Exn.raiseError(
-            `Product "${product.name}" doesn't have prices for interval "${(interval :> string)}"`,
-          )
-        | ([price], _) => price
-        | (_, None) =>
-          Exn.raiseError(
-            `Product "${product.name}" has multiple prices but no interval specified. Use "interval" param to dynamically choose which price use for the plan`,
-          )
-        | (_, Some(interval)) =>
-          Exn.raiseError(
-            `Product "${product.name}" has multiple prices for interval "${(interval :> string)}"`,
-          )
-        }
-        switch lineItemPrice {
+      lineItems: productItems->Array.map(({price}): Checkout.Session.lineItemParam => {
+        switch price {
         | {recurring: Value({meter: Value(_)}), id} => {
             price: id,
           }
