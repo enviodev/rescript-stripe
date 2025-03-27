@@ -10,20 +10,20 @@ importers:
     dependencies:
       rescript-schema:
         specifier: ^9.3.0-rescript12.0
-        version: 9.3.0(rescript@12.0.0-alpha.8)
+        version: 9.3.0(rescript@12.0.0-alpha.10)
       stripe:
         specifier: ^17.7.0
         version: 17.7.0
     devDependencies:
       '@dzakh/rescript-ava':
         specifier: ^3.1.0
-        version: 3.1.0(ava@6.2.0)(rescript@12.0.0-alpha.8)
+        version: 3.1.0(ava@6.2.0)(rescript@12.0.0-alpha.10)
       ava:
         specifier: ^6.2.0
         version: 6.2.0
       rescript:
-        specifier: 12.0.0-alpha.8
-        version: 12.0.0-alpha.8
+        specifier: ^12.0.0-alpha.10
+        version: 12.0.0-alpha.10
 
 packages:
 
@@ -637,9 +637,9 @@ packages:
       rescript:
         optional: true
 
-  rescript@12.0.0-alpha.8:
-    resolution: {integrity: sha512-I2YQ0vECymKY29j+/h51Z2A//0DgLf7g9mx5sNaWwR5fwrwTNzHS0MGIKiGfix+xJwLRteh4ighAqKeMWVQdjg==}
-    engines: {node: '>=18'}
+  rescript@12.0.0-alpha.10:
+    resolution: {integrity: sha512-fD84x1q+2iyIAhANN9Nr5BiQM7BHLdbMTYNKgnawN4qol+wT/zX/IXoWP3T1LIu1D5nqVzhxF7k3txGXsD/0oQ==}
+    engines: {node: '>=20.11.0'}
     hasBin: true
 
   resolve-cwd@3.0.0:
@@ -819,10 +819,10 @@ packages:
 
 snapshots:
 
-  '@dzakh/rescript-ava@3.1.0(ava@6.2.0)(rescript@12.0.0-alpha.8)':
+  '@dzakh/rescript-ava@3.1.0(ava@6.2.0)(rescript@12.0.0-alpha.10)':
     dependencies:
       ava: 6.2.0
-      rescript: 12.0.0-alpha.8
+      rescript: 12.0.0-alpha.10
 
   '@isaacs/cliui@8.0.2':
     dependencies:
@@ -1387,11 +1387,11 @@ snapshots:
 
   require-directory@2.1.1: {}
 
-  rescript-schema@9.3.0(rescript@12.0.0-alpha.8):
+  rescript-schema@9.3.0(rescript@12.0.0-alpha.10):
     optionalDependencies:
-      rescript: 12.0.0-alpha.8
+      rescript: 12.0.0-alpha.10
 
-  rescript@12.0.0-alpha.8: {}
+  rescript@12.0.0-alpha.10: {}
 
   resolve-cwd@3.0.0:
     dependencies:

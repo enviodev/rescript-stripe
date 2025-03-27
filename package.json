@@ -1,7 +1,7 @@
 {
   "name": "rescript-stripe",
   "description": "💸 Stripe Billing as a Config",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "keywords": [
     "rescript",
     "stripe",
@@ -43,7 +43,7 @@
   "devDependencies": {
     "@dzakh/rescript-ava": "^3.1.0",
     "ava": "^6.2.0",
-    "rescript": "12.0.0-alpha.8"
+    "rescript": "^12.0.0-alpha.10"
   },
   "peerDependencies": {
     "rescript": "12"

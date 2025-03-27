@@ -1,11 +1,3 @@
-module Stdlib = {
-  external magic: 'a => 'b = "%identity"
-
-  module Array = {
-    let lastUnsafe = array => array->Array.getUnsafe(array->Array.length - 1)
-  }
-}
-
 type stripe
 
 @module("stripe") @new
@@ -656,7 +648,7 @@ module Customer = {
       | Some(_) => match
       | None =>
         if page.hasMore {
-          await lookup(~startingAfter=Some((page.data->Stdlib.Array.lastUnsafe).id))
+          await lookup(~startingAfter=Some((page.data->Array.last->Option.getUnsafe).id))
         } else {
           None
         }
@@ -720,7 +712,7 @@ module Customer = {
             if indexInCache !== -1 {
               switch customer {
               | {deleted: true} =>
-                let _ = cache.items->Js.Array2.removeCountInPlace(~pos=indexInCache, ~count=1)
+                let _ = cache.items->Array.removeInPlace(indexInCache)
               | _ =>
                 cache.items->Array.set(
                   indexInCache,
@@ -749,7 +741,7 @@ module Customer = {
             `Any new customer doesn't match metadata. Looking for older customers on server...`,
             metadata,
           )
-          let c = await lookup(~startingAfter=Some((cache.items->Stdlib.Array.lastUnsafe).id))
+          let c = await lookup(~startingAfter=Some((cache.items->Array.last->Option.getUnsafe).id))
           Console.log2(`Finished looking for customers by metadata`, metadata)
           c
         | None => {
@@ -1034,7 +1026,7 @@ module Billing = {
     | Some(Year) => priceAmount->Int.toFloat / 12.
     | Some(Month) => priceAmount->Int.toFloat
     | _ =>
-      Js.Exn.raiseError(
+      Exn.raiseError(
         "The past usage bill only supports subscriptions with yearly or monthly intervals",
       )
     }
@@ -1049,7 +1041,7 @@ module Billing = {
       Date.makeWithYMD(
         ~year=startedAt->Date.getFullYear,
         ~month=startedAt->Date.getMonth + 1,
-        ~date=0,
+        ~day=0,
       )->Date.getDate
     let daysUsedFirstMonth = daysInStartMonth - startedAt->Date.getDate
     let firstMonthFraction = daysUsedFirstMonth->Int.toFloat / daysInStartMonth->Int.toFloat
@@ -1060,7 +1052,7 @@ module Billing = {
       Date.makeWithYMD(
         ~year=now->Date.getFullYear,
         ~month=now->Date.getMonth + 1,
-        ~date=0,
+        ~day=0,
       )->Date.getDate
     let currentMonthFraction = daysUsedCurrentMonth->Int.toFloat / daysInCurrentMonth->Int.toFloat
 
