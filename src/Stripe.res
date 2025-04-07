@@ -25,6 +25,186 @@ type page<'item> = {
   data: array<'item>,
 }
 
+type baseListParams = {
+  limit?: int,
+  @as("starting_after")
+  startingAfter?: string,
+  @as("ending_before")
+  endingBefore?: string,
+}
+
+let makeFindByMetadata = (
+  ~name,
+  ~list: (stripe, baseListParams) => promise<page<'item>>,
+  ~retrieve,
+) => {
+  let cache = {
+    hasMore: true,
+    lock: 0,
+    items: [],
+  }
+
+  async (stripe: stripe, metadata: dict<string>) => {
+    let lock = cache.lock + 1
+    cache.lock = lock
+
+    let matches = switch Dict.toArray(metadata) {
+    | [] => _ => true
+    | [(key, value)] => (item: objectWithMetadata) => item.metadata->Dict.getUnsafe(key) === value
+    | entries =>
+      item => entries->Array.every(((key, value)) => item.metadata->Dict.getUnsafe(key) === value)
+    }
+
+    let updateCache = (data, ~hasMore, ~isCatchUp) => {
+      if cache.lock === lock {
+        if isCatchUp {
+          let newCacheItems = data->Array.map(item => {
+            id: item.id,
+            metadata: item.metadata,
+          })
+          cache.items = newCacheItems->Array.concat(cache.items)
+        } else {
+          cache.hasMore = hasMore
+          data->Array.forEach(item => {
+            cache.items
+            ->Array.push({
+              id: item.id,
+              metadata: item.metadata,
+            })
+            ->ignore
+          })
+        }
+      }
+    }
+
+    let rec lookup = async (~startingAfter) => {
+      let page =
+        (await stripe
+        ->list({
+          limit: 1000,
+          ?startingAfter,
+        }))
+        ->(Obj.magic: page<'item> => page<objectWithMetadata>)
+      updateCache(page.data, ~hasMore=page.hasMore, ~isCatchUp=false)
+      let match =
+        page.data
+        ->Array.find(matches)
+        ->(Obj.magic: option<objectWithMetadata> => option<'item>)
+
+      switch match {
+      | Some(_) => match
+      | None =>
+        if page.hasMore {
+          await lookup(~startingAfter=Some((page.data->Array.last->Option.getUnsafe).id))
+        } else {
+          None
+        }
+      }
+    }
+
+    let catchUpToCache = async (~endingBefore) => {
+      let data = (
+        await (
+          stripe
+          ->list({
+            limit: 100,
+            endingBefore,
+          })
+          ->Obj.magic
+        )["autoPagingToArray"]({limit: 10000})
+      )->(Obj.magic: array<'item> => array<objectWithMetadata>)
+      if data->Array.length === 10000 {
+        Exn.raiseError(`Too many new ${name}s to cache.`)
+      }
+      updateCache(data, ~hasMore=false, ~isCatchUp=true)
+      data->Array.find(matches)
+    }
+
+    switch cache.items {
+    | [] => {
+        Console.log2(
+          `${name} metadata lookup cache is empty. Looking for ${name}s on server...`,
+          metadata,
+        )
+        let c = await lookup(~startingAfter=None)
+        Console.log2(`Finished looking for ${name}s by metadata`, metadata)
+        c
+      }
+    | items =>
+      Console.log2(`Searching for ${name}s by metadata in cache`, metadata)
+      switch cache.items->Array.find(matches) {
+      | Some(item) => {
+          Console.log2(
+            `Successfully found ${name} ID "${item.id}" by metadata in cache. Retrieving data...`,
+            metadata,
+          )
+          let item = await stripe->retrieve(item.id)
+          let deleted: bool = (item->Obj.magic)["deleted"]
+          let objectWithMetadata = item->(Obj.magic: 'item => objectWithMetadata)
+          let isValid = if deleted {
+            false
+          } else {
+            matches(objectWithMetadata)
+          }
+          Console.log2(
+            `${name} ID "${objectWithMetadata.id}" ${if deleted {
+                "is deleted"
+              } else if isValid {
+                "matches metadata lookup. Returning!"
+              } else {
+                "doesn't match cached metadata"
+              }}`,
+            metadata,
+          )
+          if isValid {
+            Some(item)
+          } else {
+            let indexInCache =
+              cache.items->Array.findIndex(cacheItem => cacheItem.id === objectWithMetadata.id)
+            if indexInCache !== -1 {
+              if deleted {
+                let _ = cache.items->Array.removeInPlace(indexInCache)
+              } else {
+                cache.items->Array.set(
+                  indexInCache,
+                  {
+                    id: objectWithMetadata.id,
+                    metadata: objectWithMetadata.metadata,
+                  },
+                )
+              }
+            }
+            None
+          }
+        }
+      | None =>
+        Console.log2(
+          `${name} by metadata isn't found in cache. Requesting newly created ${name}s...`,
+          metadata,
+        )
+        switch await catchUpToCache(~endingBefore=(items->Array.getUnsafe(0)).id) {
+        | Some(item) as match => {
+            Console.log2(`Successfully found ${name} "${item.id}" by metadata`, metadata)
+            match->(Obj.magic: option<objectWithMetadata> => option<'item>)
+          }
+        | None if cache.hasMore =>
+          Console.log2(
+            `Any new ${name} doesn't match metadata. Looking for older ${name}s on server...`,
+            metadata,
+          )
+          let c = await lookup(~startingAfter=Some((cache.items->Array.last->Option.getUnsafe).id))
+          Console.log2(`Finished looking for ${name}s by metadata`, metadata)
+          c
+        | None => {
+            Console.log2(`${name} by metadata isn't found`, metadata)
+            None
+          }
+        }
+      }
+    }
+  }
+}
+
 @unboxed
 type currency = | @as("usd") USD | ISO(string)
 
@@ -218,17 +398,40 @@ module Product = {
   type updateParams = {
     @as("unit_label")
     mutable unitLabel?: string,
+    mutable name?: string,
   }
   @scope("products") @send
   external update: (stripe, string, updateParams) => promise<t> = "update"
 
-  type listParams = {active?: bool}
+  type listParams = {
+    active?: bool,
+    limit?: int,
+    @as("starting_after")
+    startingAfter?: string,
+    @as("ending_before")
+    endingBefore?: string,
+  }
   @scope("products") @send
   external list: (stripe, listParams) => promise<page<t>> = "list"
 
   type searchParams = {query: string, limit?: int, page?: string}
   @scope("products") @send
   external search: (stripe, searchParams) => promise<page<t>> = "search"
+
+  @scope("products") @send
+  external retrieve: (stripe, string) => promise<t> = "retrieve"
+
+  let findByMetadata = makeFindByMetadata(
+    ~name="product",
+    ~list=(stripe, params) =>
+      stripe->list({
+        active: true,
+        limit: ?params.limit,
+        startingAfter: ?params.startingAfter,
+        endingBefore: ?params.endingBefore,
+      }),
+    ~retrieve,
+  )
 }
 
 module ProductCatalog = {
@@ -301,11 +504,12 @@ module ProductCatalog = {
     ~interval: option<Price.interval>=?,
   ) => {
     Console.log(`Searching for active product "${productConfig.ref}"...`)
-    let product = switch await stripe->Product.search({
-      query: `active:"true" AND metadata["#product_ref"]:"${productConfig.ref}"`,
-      limit: 2,
-    }) {
-    | {data: []} => {
+    let product = switch await stripe->Product.findByMetadata(
+      dict{
+        "#product_ref": productConfig.ref,
+      },
+    ) {
+    | None => {
         Console.log(`No active product "${productConfig.ref}" found. Creating a new one...`)
         let p = await stripe->Product.create({
           name: productConfig.name,
@@ -317,7 +521,7 @@ module ProductCatalog = {
         Console.log(`Product "${productConfig.ref}" successfully created. Product ID: ${p.id}`)
         p
       }
-    | {data: [p]} => {
+    | Some(p) => {
         Console.log(`Found an existing product "${productConfig.ref}". Product ID: ${p.id}`)
 
         let fieldsToSync: Product.updateParams = {}
@@ -327,6 +531,9 @@ module ProductCatalog = {
         | (Null, None) => ()
         | (_, Some(configured)) => fieldsToSync.unitLabel = Some(configured)
         | (_, None) => fieldsToSync.unitLabel = Some("")
+        }
+        if p.name !== productConfig.name {
+          fieldsToSync.name = Some(productConfig.name)
         }
 
         let fieldNamesToSync = Dict.keysToArray(fieldsToSync->Obj.magic)
@@ -345,10 +552,6 @@ module ProductCatalog = {
           p
         }
       }
-    | {data: _} =>
-      Exn.raiseError(
-        `There are multiple active products "${productConfig.ref}". Please go to dashboard and delete not needed ones (https://dashboard.stripe.com/test/products?active=true)`,
-      )
     }
 
     Console.log(`Searching for product "${productConfig.ref}" active prices...`)
@@ -576,14 +779,14 @@ module Customer = {
   external search: (stripe, searchParams) => promise<page<t>> = "search"
 
   type listParams = {
-    email?: string,
-    @as("ending_before")
-    endingBefore?: string,
+    limit?: int,
     @as("starting_after")
     startingAfter?: string,
-    limit?: int,
+    @as("ending_before")
+    endingBefore?: string,
     @as("test_clock")
     testClock?: bool,
+    email?: string,
   }
   @scope("customers") @send
   external list: (stripe, listParams) => promise<page<t>> = "list"
@@ -591,167 +794,16 @@ module Customer = {
   @scope("customers") @send
   external retrieve: (stripe, string) => promise<t> = "retrieve"
 
-  %%private(
-    let cache = {
-      hasMore: true,
-      lock: 0,
-      items: [],
-    }
+  let findByMetadata = makeFindByMetadata(
+    ~name="customer",
+    ~list=(stripe, params) =>
+      stripe->list({
+        limit: ?params.limit,
+        startingAfter: ?params.startingAfter,
+        endingBefore: ?params.endingBefore,
+      }),
+    ~retrieve,
   )
-
-  let findByMetadata = async (stripe: stripe, metadata: dict<string>) => {
-    let lock = cache.lock + 1
-    cache.lock = lock
-
-    let matches = switch Dict.toArray(metadata) {
-    | [] => _ => true
-    | [(key, value)] => (item: objectWithMetadata) => item.metadata->Dict.getUnsafe(key) === value
-    | entries =>
-      item => entries->Array.every(((key, value)) => item.metadata->Dict.getUnsafe(key) === value)
-    }
-
-    let updateCache = (data, ~hasMore, ~isCatchUp) => {
-      if cache.lock === lock {
-        if isCatchUp {
-          let newCacheItems = data->Array.map(item => {
-            id: item.id,
-            metadata: item.metadata,
-          })
-          cache.items = newCacheItems->Array.concat(cache.items)
-        } else {
-          cache.hasMore = hasMore
-          data->Array.forEach(item => {
-            cache.items
-            ->Array.push({
-              id: item.id,
-              metadata: item.metadata,
-            })
-            ->ignore
-          })
-        }
-      }
-    }
-
-    let rec lookup = async (~startingAfter) => {
-      let page = await stripe->list({
-        limit: 1000,
-        ?startingAfter,
-      })
-      updateCache(page.data, ~hasMore=page.hasMore, ~isCatchUp=false)
-      let match =
-        page.data
-        ->(Obj.magic: array<t> => array<objectWithMetadata>)
-        ->Array.find(matches)
-        ->(Obj.magic: option<objectWithMetadata> => option<t>)
-
-      switch match {
-      | Some(_) => match
-      | None =>
-        if page.hasMore {
-          await lookup(~startingAfter=Some((page.data->Array.last->Option.getUnsafe).id))
-        } else {
-          None
-        }
-      }
-    }
-
-    let catchUpToCache = async (~endingBefore) => {
-      let data = await (
-        stripe
-        ->list({
-          limit: 100,
-          endingBefore,
-        })
-        ->Obj.magic
-      )["autoPagingToArray"]({limit: 10000})
-      if data->Array.length === 10000 {
-        Exn.raiseError("Too many new customers to cache.")
-      }
-      updateCache(data, ~hasMore=false, ~isCatchUp=true)
-      data
-      ->(Obj.magic: array<t> => array<objectWithMetadata>)
-      ->Array.find(matches)
-      ->(Obj.magic: option<objectWithMetadata> => option<t>)
-    }
-
-    switch cache.items {
-    | [] => {
-        Console.log2(
-          "Customer metadata lookup cache is empty. Looking for customers on server...",
-          metadata,
-        )
-        let c = await lookup(~startingAfter=None)
-        Console.log2(`Finished looking for customers by metadata`, metadata)
-        c
-      }
-    | items =>
-      Console.log2("Searching for customer by metadata in cache", metadata)
-      switch cache.items->Array.find(matches) {
-      | Some(item) => {
-          Console.log2(
-            `Successfully found Customer ID "${item.id}" by metadata in cache. Retrieving data...`,
-            metadata,
-          )
-          let customer = await stripe->retrieve(item.id)
-          let isValid = switch customer {
-          | {deleted: true} => false
-          | item => matches(item->(Obj.magic: t => objectWithMetadata))
-          }
-          Console.log2(
-            `Customer ID "${item.id}" ${switch customer {
-              | {deleted: true} => "is deleted"
-              | _ =>
-                isValid ? "matches metadata lookup. Returning!" : "doesn't match cached metadata"
-              }}`,
-            metadata,
-          )
-          if isValid {
-            Some(customer)
-          } else {
-            let indexInCache = cache.items->Array.findIndex(item => item.id === customer.id)
-            if indexInCache !== -1 {
-              switch customer {
-              | {deleted: true} =>
-                let _ = cache.items->Array.removeInPlace(indexInCache)
-              | _ =>
-                cache.items->Array.set(
-                  indexInCache,
-                  {
-                    id: customer.id,
-                    metadata: customer.metadata,
-                  },
-                )
-              }
-            }
-            None
-          }
-        }
-      | None =>
-        Console.log2(
-          "Customer by metadata isn't found in cache. Requesting newly created customers...",
-          metadata,
-        )
-        switch await catchUpToCache(~endingBefore=(items->Array.getUnsafe(0)).id) {
-        | Some(customer) as match => {
-            Console.log2(`Successfully found customer "${customer.id}" by metadata`, metadata)
-            match
-          }
-        | None if cache.hasMore =>
-          Console.log2(
-            `Any new customer doesn't match metadata. Looking for older customers on server...`,
-            metadata,
-          )
-          let c = await lookup(~startingAfter=Some((cache.items->Array.last->Option.getUnsafe).id))
-          Console.log2(`Finished looking for customers by metadata`, metadata)
-          c
-        | None => {
-            Console.log2(`Customer by metadata isn't found`, metadata)
-            None
-          }
-        }
-      }
-    }
-  }
 }
 
 module Subscription = {

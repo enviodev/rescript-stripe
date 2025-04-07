@@ -12,13 +12,142 @@ function make(prim) {
   return new Stripe(prim, {"telemetry": false});
 }
 
+function makeFindByMetadata(name, list, retrieve) {
+  let cache = {
+    hasMore: true,
+    lock: 0,
+    items: []
+  };
+  return async (stripe, metadata) => {
+    let lock = cache.lock + 1 | 0;
+    cache.lock = lock;
+    let entries = Object.entries(metadata);
+    let len = entries.length;
+    let matches;
+    if (len !== 1) {
+      matches = len !== 0 ? item => entries.every(param => item.metadata[param[0]] === param[1]) : param => true;
+    } else {
+      let match = entries[0];
+      let value = match[1];
+      let key = match[0];
+      matches = item => item.metadata[key] === value;
+    }
+    let updateCache = (data, hasMore, isCatchUp) => {
+      if (cache.lock !== lock) {
+        return;
+      }
+      if (isCatchUp) {
+        let newCacheItems = data.map(item => ({
+          id: item.id,
+          metadata: item.metadata
+        }));
+        cache.items = newCacheItems.concat(cache.items);
+        return;
+      }
+      cache.hasMore = hasMore;
+      data.forEach(item => {
+        cache.items.push({
+          id: item.id,
+          metadata: item.metadata
+        });
+      });
+    };
+    let lookup = async startingAfter => {
+      let page = await list(stripe, {
+        limit: 1000,
+        starting_after: startingAfter
+      });
+      updateCache(page.data, page.has_more, false);
+      let match = page.data.find(matches);
+      if (match !== undefined) {
+        return match;
+      } else if (page.has_more) {
+        return await lookup(Stdlib_Array.last(page.data).id);
+      } else {
+        return;
+      }
+    };
+    let catchUpToCache = async endingBefore => {
+      let data = await list(stripe, {
+        limit: 100,
+        ending_before: endingBefore
+      }).autoPagingToArray({
+        limit: 10000
+      });
+      if (data.length === 10000) {
+        Stdlib_Exn.raiseError("Too many new " + name + "s to cache.");
+      }
+      updateCache(data, false, true);
+      return data.find(matches);
+    };
+    let items = cache.items;
+    if (items.length !== 0) {
+      console.log("Searching for " + name + "s by metadata in cache", metadata);
+      let item = cache.items.find(matches);
+      if (item !== undefined) {
+        console.log("Successfully found " + name + " ID \"" + item.id + "\" by metadata in cache. Retrieving data...", metadata);
+        let item$1 = await retrieve(stripe, item.id);
+        let deleted = item$1.deleted;
+        let isValid = deleted ? false : matches(item$1);
+        console.log(name + " ID \"" + item$1.id + "\" " + (
+          deleted ? "is deleted" : (
+              isValid ? "matches metadata lookup. Returning!" : "doesn't match cached metadata"
+            )
+        ), metadata);
+        if (isValid) {
+          return Primitive_option.some(item$1);
+        }
+        let indexInCache = cache.items.findIndex(cacheItem => cacheItem.id === item$1.id);
+        if (indexInCache !== -1) {
+          if (deleted) {
+            cache.items.splice(indexInCache, 1);
+          } else {
+            cache.items[indexInCache] = {
+              id: item$1.id,
+              metadata: item$1.metadata
+            };
+          }
+        }
+        return;
+      }
+      console.log(name + " by metadata isn't found in cache. Requesting newly created " + name + "s...", metadata);
+      let match$1 = await catchUpToCache(items[0].id);
+      if (match$1 !== undefined) {
+        console.log("Successfully found " + name + " \"" + match$1.id + "\" by metadata", metadata);
+        return match$1;
+      }
+      if (cache.hasMore) {
+        console.log("Any new " + name + " doesn't match metadata. Looking for older " + name + "s on server...", metadata);
+        let c = await lookup(Stdlib_Array.last(cache.items).id);
+        console.log("Finished looking for " + name + "s by metadata", metadata);
+        return c;
+      }
+      console.log(name + " by metadata isn't found", metadata);
+      return;
+    }
+    console.log(name + " metadata lookup cache is empty. Looking for " + name + "s on server...", metadata);
+    let c$1 = await lookup(undefined);
+    console.log("Finished looking for " + name + "s by metadata", metadata);
+    return c$1;
+  };
+}
+
 let Meter = {};
 
 let MeterEvent = {};
 
 let Price = {};
 
-let Product = {};
+let findByMetadata = makeFindByMetadata("product", (stripe, params) => stripe.products.list({
+  active: true,
+  limit: params.limit,
+  starting_after: params.starting_after,
+  ending_before: params.ending_before
+}), (prim0, prim1) => prim0.products.retrieve(prim1));
+
+let Product = {
+  findByMetadata: findByMetadata
+};
 
 function getPriceConfig(productConfig, interval) {
   let match = productConfig.prices;
@@ -61,60 +190,55 @@ function getPriceConfig(productConfig, interval) {
 
 async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, interval) {
   console.log("Searching for active product \"" + productConfig.ref + "\"...");
-  let match = await stripe.products.search({
-    query: "active:\"true\" AND metadata[\"#product_ref\"]:\"" + productConfig.ref + "\"",
-    limit: 2
+  let p = await findByMetadata(stripe, {
+    "#product_ref": productConfig.ref
   });
-  let match$1 = match.data;
-  let len = match$1.length;
   let product;
-  if (len !== 1) {
-    if (len !== 0) {
-      product = Stdlib_Exn.raiseError("There are multiple active products \"" + productConfig.ref + "\". Please go to dashboard and delete not needed ones (https://dashboard.stripe.com/test/products?active=true)");
-    } else {
-      console.log("No active product \"" + productConfig.ref + "\" found. Creating a new one...");
-      let p = await stripe.products.create({
-        name: productConfig.name,
-        metadata: {
-          "#product_ref": productConfig.ref
-        },
-        unit_label: productConfig.unitLabel
-      });
-      console.log("Product \"" + productConfig.ref + "\" successfully created. Product ID: " + p.id);
-      product = p;
-    }
-  } else {
-    let p$1 = match$1[0];
-    console.log("Found an existing product \"" + productConfig.ref + "\". Product ID: " + p$1.id);
+  if (p !== undefined) {
+    console.log("Found an existing product \"" + productConfig.ref + "\". Product ID: " + p.id);
     let fieldsToSync = {};
-    let match$2 = p$1.unit_label;
-    let match$3 = productConfig.unitLabel;
+    let match = p.unit_label;
+    let match$1 = productConfig.unitLabel;
     let exit = 0;
-    if (match$2 === null) {
-      if (match$3 !== undefined) {
+    if (match === null) {
+      if (match$1 !== undefined) {
         exit = 1;
       }
       
-    } else if (match$3 === undefined || match$2 !== match$3) {
+    } else if (match$1 === undefined || match !== match$1) {
       exit = 1;
     }
     if (exit === 1) {
-      if (match$3 !== undefined) {
-        fieldsToSync.unit_label = match$3;
+      if (match$1 !== undefined) {
+        fieldsToSync.unit_label = match$1;
       } else {
         fieldsToSync.unit_label = "";
       }
     }
+    if (p.name !== productConfig.name) {
+      fieldsToSync.name = productConfig.name;
+    }
     let fieldNamesToSync = Object.keys(fieldsToSync);
     if (fieldNamesToSync.length > 0) {
       console.log("Syncing product \"" + productConfig.ref + "\" fields " + fieldNamesToSync.join(", ") + "...");
-      let p$2 = await stripe.products.update(p$1.id, fieldsToSync);
+      let p$1 = await stripe.products.update(p.id, fieldsToSync);
       console.log("Product \"" + productConfig.ref + "\" fields successfully updated");
-      product = p$2;
+      product = p$1;
     } else {
       console.log("Product \"" + productConfig.ref + "\" is in sync");
-      product = p$1;
+      product = p;
     }
+  } else {
+    console.log("No active product \"" + productConfig.ref + "\" found. Creating a new one...");
+    let p$2 = await stripe.products.create({
+      name: productConfig.name,
+      metadata: {
+        "#product_ref": productConfig.ref
+      },
+      unit_label: productConfig.unitLabel
+    });
+    console.log("Product \"" + productConfig.ref + "\" successfully created. Product ID: " + p$2.id);
+    product = p$2;
   }
   console.log("Searching for product \"" + productConfig.ref + "\" active prices...");
   let prices = await stripe.prices.list({
@@ -311,126 +435,14 @@ let ProductCatalog = {
   sync: sync
 };
 
-let cache = {
-  hasMore: true,
-  lock: 0,
-  items: []
-};
-
-async function findByMetadata(stripe, metadata) {
-  let lock = cache.lock + 1 | 0;
-  cache.lock = lock;
-  let entries = Object.entries(metadata);
-  let len = entries.length;
-  let matches;
-  if (len !== 1) {
-    matches = len !== 0 ? item => entries.every(param => item.metadata[param[0]] === param[1]) : param => true;
-  } else {
-    let match = entries[0];
-    let value = match[1];
-    let key = match[0];
-    matches = item => item.metadata[key] === value;
-  }
-  let updateCache = (data, hasMore, isCatchUp) => {
-    if (cache.lock !== lock) {
-      return;
-    }
-    if (isCatchUp) {
-      let newCacheItems = data.map(item => ({
-        id: item.id,
-        metadata: item.metadata
-      }));
-      cache.items = newCacheItems.concat(cache.items);
-      return;
-    }
-    cache.hasMore = hasMore;
-    data.forEach(item => {
-      cache.items.push({
-        id: item.id,
-        metadata: item.metadata
-      });
-    });
-  };
-  let lookup = async startingAfter => {
-    let page = await stripe.customers.list({
-      starting_after: startingAfter,
-      limit: 1000
-    });
-    updateCache(page.data, page.has_more, false);
-    let match = page.data.find(matches);
-    if (match !== undefined) {
-      return match;
-    } else if (page.has_more) {
-      return await lookup(Stdlib_Array.last(page.data).id);
-    } else {
-      return;
-    }
-  };
-  let catchUpToCache = async endingBefore => {
-    let data = await stripe.customers.list({
-      ending_before: endingBefore,
-      limit: 100
-    }).autoPagingToArray({
-      limit: 10000
-    });
-    if (data.length === 10000) {
-      Stdlib_Exn.raiseError("Too many new customers to cache.");
-    }
-    updateCache(data, false, true);
-    return data.find(matches);
-  };
-  let items = cache.items;
-  if (items.length !== 0) {
-    console.log("Searching for customer by metadata in cache", metadata);
-    let item = cache.items.find(matches);
-    if (item !== undefined) {
-      console.log("Successfully found Customer ID \"" + item.id + "\" by metadata in cache. Retrieving data...", metadata);
-      let customer = await stripe.customers.retrieve(item.id);
-      let isValid = customer.deleted ? false : matches(customer);
-      console.log("Customer ID \"" + item.id + "\" " + (
-        customer.deleted ? "is deleted" : (
-            isValid ? "matches metadata lookup. Returning!" : "doesn't match cached metadata"
-          )
-      ), metadata);
-      if (isValid) {
-        return customer;
-      }
-      let indexInCache = cache.items.findIndex(item => item.id === customer.id);
-      if (indexInCache !== -1) {
-        if (customer.deleted) {
-          cache.items.splice(indexInCache, 1);
-        } else {
-          cache.items[indexInCache] = {
-            id: customer.id,
-            metadata: customer.metadata
-          };
-        }
-      }
-      return;
-    }
-    console.log("Customer by metadata isn't found in cache. Requesting newly created customers...", metadata);
-    let match$1 = await catchUpToCache(items[0].id);
-    if (match$1 !== undefined) {
-      console.log("Successfully found customer \"" + match$1.id + "\" by metadata", metadata);
-      return match$1;
-    }
-    if (cache.hasMore) {
-      console.log("Any new customer doesn't match metadata. Looking for older customers on server...", metadata);
-      let c = await lookup(Stdlib_Array.last(cache.items).id);
-      console.log("Finished looking for customers by metadata", metadata);
-      return c;
-    }
-    console.log("Customer by metadata isn't found", metadata);
-    return;
-  }
-  console.log("Customer metadata lookup cache is empty. Looking for customers on server...", metadata);
-  let c$1 = await lookup(undefined);
-  console.log("Finished looking for customers by metadata", metadata);
-  return c$1;
-}
+let findByMetadata$1 = makeFindByMetadata("customer", (stripe, params) => stripe.customers.list({
+  limit: params.limit,
+  starting_after: params.starting_after,
+  ending_before: params.ending_before
+}), (prim0, prim1) => prim0.customers.retrieve(prim1));
 
 let Customer = {
-  findByMetadata: findByMetadata
+  findByMetadata: findByMetadata$1
 };
 
 function isTerminatedStatus(status) {
@@ -661,12 +673,12 @@ async function internalRetrieveSubscription(stripe, data, config, customerId, us
 }
 
 function retrieveCustomer(stripe, config, data) {
-  return findByMetadata(stripe, processData(data, config).customerMetadata);
+  return findByMetadata$1(stripe, processData(data, config).customerMetadata);
 }
 
 async function retrieveSubscriptionWithCustomer(stripe, config, data) {
   let processedData = processData(data, config);
-  let customer = await findByMetadata(stripe, processedData.customerMetadata);
+  let customer = await findByMetadata$1(stripe, processedData.customerMetadata);
   if (customer === undefined) {
     return {
       customer: undefined,
@@ -767,7 +779,7 @@ async function createHostedCheckoutSession(stripe, params) {
   } else {
     products$1 = Stdlib_Exn.raiseError("Plan \"" + planId + "\" doesn't have any products configured");
   }
-  let c = await findByMetadata(stripe, data.customerMetadata);
+  let c = await findByMetadata$1(stripe, data.customerMetadata);
   let customer;
   if (c !== undefined) {
     customer = c;
@@ -880,6 +892,7 @@ let Metadata = {
 
 export {
   make,
+  makeFindByMetadata,
   Meter,
   MeterEvent,
   Price,
@@ -893,4 +906,4 @@ export {
   Billing,
   Metadata,
 }
-/* stripe Not a pure module */
+/* findByMetadata Not a pure module */
