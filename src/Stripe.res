@@ -794,6 +794,16 @@ module Customer = {
   @scope("customers") @send
   external retrieve: (stripe, string) => promise<t> = "retrieve"
 
+  type updateParams = {
+    description?: string,
+    email?: string,
+    metadata?: dict<string>,
+    name?: string,
+    phone?: string,
+  }
+  @scope("customers") @send
+  external update: (stripe, string, updateParams) => promise<t> = "update"
+
   let findByMetadata = makeFindByMetadata(
     ~name="customer",
     ~list=(stripe, params) =>
@@ -804,6 +814,23 @@ module Customer = {
       }),
     ~retrieve,
   )
+
+  let findOrCreateByMetadata = async (stripe, metadata) => {
+    switch await stripe->findByMetadata(metadata) {
+    | Some(c) => c
+    | None => {
+        Console.log(`Creating a new customer...`)
+        let c = await create(
+          stripe,
+          {
+            metadata: metadata,
+          },
+        )
+        Console.log(`Successfully created a new customer with id: ${c.id}`)
+        c
+      }
+    }
+  }
 }
 
 module Subscription = {
@@ -1043,10 +1070,20 @@ module Billing = {
     termsOfServiceConsent?: bool,
   }
 
+  type pastUsage = {startedAt: Date.t}
+
+  type preset<'data, 'plan> = {
+    config: t<'data, 'plan>,
+    data: 'data,
+    plan: 'plan,
+    billPastUsage?: pastUsage,
+  }
+
   type subscription<'config> = private {...Subscription.t}
-  type subscriptionWithCustomer<'config> = {
+  type subscriptionWithCustomer<'data, 'plan> = {
     customer: option<Customer.t>,
-    subscription: option<subscription<'config>>,
+    subscription: option<subscription<t<'data, 'plan>>>,
+    preset: option<preset<'data, 'plan>>,
   }
 
   let refField = "#subscription_ref"
@@ -1119,9 +1156,50 @@ module Billing = {
   }
 
   %%private(
+    let toPresetKey = (config, processedData) => {
+      let key = ref(`#preset:${config.ref}`)
+      processedData["presetLookupFields"]->Array.forEach(name => {
+        key := `${key.contents}:${processedData["dict"]->Dict.getUnsafe(name)}`
+      })
+      key.contents
+    }
+
+    let startedAtSchema = S.union([
+      S.literal(0)->S.shape(_ => None),
+      S.float
+      ->S.transform(_ => {
+        parser: float => float->Date.fromTime,
+        serializer: date => date->Date.getTime,
+      })
+      ->(Obj.magic: S.t<'a> => S.t<option<'a>>),
+    ])
+
+    let toPresetSchema = config =>
+      S.tuple2(
+        S.union(
+          config.plans->Array.map(((_, planConfig)) => {
+            S.schema(s => {
+              planConfig({
+                field: ({schema}) => {
+                  s.matches(schema)
+                },
+                tag: (_, _) => {
+                  ()
+                },
+                matches: schema => {
+                  s.matches(schema)
+                },
+              })
+            })
+          }),
+        ),
+        startedAtSchema,
+      )
+
     let processData = (data, ~config) => {
       let primaryFields = [refField]
       let customerLookupFields = []
+      let presetLookupFields = []
       let metadataFields = [refField]
       let schema = S.object(s => {
         s.tag(refField, config.ref)
@@ -1131,6 +1209,8 @@ module Billing = {
             metadataFields->Array.push(fieldName)->ignore
             if customerLookup {
               customerLookupFields->Array.push(fieldName)->ignore
+            } else {
+              presetLookupFields->Array.push(fieldName)->ignore
             }
             s.field(fieldName, coereced)
           },
@@ -1160,6 +1240,7 @@ module Billing = {
         "primaryFields": primaryFields,
         "customerMetadata": customerMetadata,
         "metadataFields": metadataFields,
+        "presetLookupFields": presetLookupFields,
       }
     }
 
@@ -1174,12 +1255,7 @@ module Billing = {
         `Searching for an existing "${config.ref}" subscription for customer "${customerId}"...`,
       )
       let subscriptions = await stripe->listSubscriptions(~config, ~customerId)
-      Console.log(
-        `Found ${subscriptions
-          ->Array.length
-          ->Int.toString} subscriptions for the customer. Validating that the new subscription is not already active...`,
-      )
-      subscriptions->Array.find(subscription => {
+      let s = subscriptions->Array.find(subscription => {
         // FIXME: This shouldn't be stopped by .find
         switch usedMetersAcc {
         | Some(usedMetersAcc) =>
@@ -1209,6 +1285,12 @@ module Billing = {
           false
         }
       })
+      if s->Option.isNone {
+        Console.log(
+          `No existing subscriptions "${config.ref}" found for customer "${customerId}" with the provided data.`,
+        )
+      }
+      s
     }
   )
 
@@ -1220,21 +1302,53 @@ module Billing = {
     let processedData = processData(data, ~config)
     switch await stripe->Customer.findByMetadata(processedData["customerMetadata"]) {
     | Some(customer) =>
+      let preset = switch customer.metadata->Dict.get(toPresetKey(config, processedData)) {
+      | Some(preset) => {
+          let presetSchema = toPresetSchema(config)
+          try {
+            let (plan, startedAt) = preset->S.parseJsonStringOrThrow(presetSchema)
+            Some({
+              plan,
+              data,
+              config,
+              billPastUsage: ?switch startedAt {
+              | Some(startedAt) => Some({startedAt: startedAt})
+              | None => None
+              },
+            })
+          } catch {
+          | exn => {
+              Console.log2(
+                `Failed to parse preset "${preset}" for "${config.ref}" subscription.`,
+                exn,
+              )
+              None
+            }
+          }
+        }
+      | None => None
+      }
       switch await internalRetrieveSubscription(
         stripe,
         processedData,
         ~customerId=customer.id,
         ~config,
       ) {
-      | Some(subscription) => {customer: Some(customer), subscription: Some(subscription)}
+      | Some(subscription) => {
+          customer: Some(customer),
+          subscription: Some(subscription),
+          preset,
+        }
       | None => {
           customer: Some(customer),
           subscription: None,
+          preset,
         }
       }
     | None => {
         customer: None,
         subscription: None,
+        preset: None,
       }
     }
   }
@@ -1245,7 +1359,42 @@ module Billing = {
     }
   }
 
-  type pastUsage = {startedAt: Date.t}
+  let preset = async (stripe, preset: preset<'data, 'plan>) => {
+    let processedData = processData(preset.data, ~config=preset.config)
+    let presetKey = toPresetKey(preset.config, processedData)
+    let preset =
+      (
+        preset.plan,
+        preset.billPastUsage->Option.map(v => v.startedAt),
+      )->S.reverseConvertToJsonStringOrThrow(toPresetSchema(preset.config))
+    let metadata = Dict.make()
+    metadata->Dict.set(presetKey, preset)
+
+    switch await stripe->Customer.findByMetadata(processedData["customerMetadata"]) {
+    | Some(c) =>
+      Console.log(`Setting preset for the existing customer...`)
+      let c = await stripe->Customer.update(
+        c.id,
+        {
+          metadata: metadata,
+        },
+      )
+      Console.log(`Successfully set preset for the existing customer`)
+      c
+    | None => {
+        Console.log(`Creating a new customer...`)
+
+        let c = await Customer.create(
+          stripe,
+          {
+            metadata: metadata->Dict.assign(processedData["customerMetadata"]),
+          },
+        )
+        Console.log(`Successfully created a new customer with id: ${c.id}`)
+        c
+      }
+    }
+  }
 
   type hostedCheckoutSessionParams<'data, 'plan> = {
     config: t<'data, 'plan>,
@@ -1356,20 +1505,7 @@ module Billing = {
       }
     }
 
-    let customer = switch await stripe->Customer.findByMetadata(data["customerMetadata"]) {
-    | Some(c) => c
-    | None => {
-        Console.log(`Creating a new customer...`)
-        let c = await Customer.create(
-          stripe,
-          {
-            metadata: data["customerMetadata"],
-          },
-        )
-        Console.log(`Successfully created a new customer with id: ${c.id}`)
-        c
-      }
-    }
+    let customer = await stripe->Customer.findOrCreateByMetadata(data["customerMetadata"])
 
     let usedCustomerMeters = Set.make()
 

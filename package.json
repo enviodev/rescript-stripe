@@ -1,7 +1,7 @@
 {
   "name": "rescript-stripe",
   "description": "💸 Stripe Billing as a Config",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "keywords": [
     "rescript",
     "stripe",
@@ -15,9 +15,7 @@
   "scripts": {
     "build": "rescript",
     "res": "rescript -w",
-    "test": "ava",
-    "sync": "node scripts/Sync.res.mjs",
-    "subscribe": "node scripts/Subscribe.res.mjs"
+    "test": "ava"
   },
   "homepage": "https://github.com/enviodev/rescript-stripe#readme",
   "bugs": {

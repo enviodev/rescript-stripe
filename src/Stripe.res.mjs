@@ -441,8 +441,22 @@ let findByMetadata$1 = makeFindByMetadata("customer", (stripe, params) => stripe
   ending_before: params.ending_before
 }), (prim0, prim1) => prim0.customers.retrieve(prim1));
 
+async function findOrCreateByMetadata(stripe, metadata) {
+  let c = await findByMetadata$1(stripe, metadata);
+  if (c !== undefined) {
+    return c;
+  }
+  console.log("Creating a new customer...");
+  let c$1 = await stripe.customers.create({
+    metadata: metadata
+  });
+  console.log("Successfully created a new customer with id: " + c$1.id);
+  return c$1;
+}
+
 let Customer = {
-  findByMetadata: findByMetadata$1
+  findByMetadata: findByMetadata$1,
+  findOrCreateByMetadata: findOrCreateByMetadata
 };
 
 function isTerminatedStatus(status) {
@@ -605,9 +619,39 @@ function calculatePastUsageBill(priceAmount, startedAt, now, interval) {
   return fullMonths * monthlyPrice + firstMonthFraction * monthlyPrice + currentMonthFraction * monthlyPrice | 0;
 }
 
+function toPresetKey(config, processedData) {
+  let key = {
+    contents: "#preset:" + config.ref
+  };
+  processedData.presetLookupFields.forEach(name => {
+    key.contents = key.contents + ":" + processedData.dict[name];
+  });
+  return key.contents;
+}
+
+let startedAtSchema = S$RescriptSchema.union([
+  S$RescriptSchema.shape(S$RescriptSchema.literal(0), param => {}),
+  S$RescriptSchema.transform(S$RescriptSchema.float, param => ({
+    p: float => new Date(float),
+    s: date => date.getTime()
+  }))
+]);
+
+function toPresetSchema(config) {
+  return S$RescriptSchema.tuple2(S$RescriptSchema.union(config.plans.map(param => {
+    let planConfig = param[1];
+    return S$RescriptSchema.schema(s => planConfig({
+      field: param => s.m(param.schema),
+      tag: (param, param$1) => {},
+      matches: schema => s.m(schema)
+    }));
+  })), startedAtSchema);
+}
+
 function processData(data, config) {
   let primaryFields = [refField];
   let customerLookupFields = [];
+  let presetLookupFields = [];
   let metadataFields = [refField];
   let schema = S$RescriptSchema.object(s => {
     s.tag(refField, config.ref);
@@ -619,6 +663,8 @@ function processData(data, config) {
         metadataFields.push(fieldName);
         if (customerLookup) {
           customerLookupFields.push(fieldName);
+        } else {
+          presetLookupFields.push(fieldName);
         }
         return s.f(fieldName, param.coereced);
       },
@@ -643,15 +689,15 @@ function processData(data, config) {
     schema: schema,
     primaryFields: primaryFields,
     customerMetadata: customerMetadata,
-    metadataFields: metadataFields
+    metadataFields: metadataFields,
+    presetLookupFields: presetLookupFields
   };
 }
 
 async function internalRetrieveSubscription(stripe, data, config, customerId, usedMetersAcc) {
   console.log("Searching for an existing \"" + config.ref + "\" subscription for customer \"" + customerId + "\"...");
   let subscriptions = await listSubscriptions(stripe, config, customerId);
-  console.log("Found " + subscriptions.length.toString() + " subscriptions for the customer. Validating that the new subscription is not already active...");
-  return subscriptions.find(subscription => {
+  let s = subscriptions.find(subscription => {
     if (usedMetersAcc !== undefined) {
       let usedMetersAcc$1 = Primitive_option.valFromOption(usedMetersAcc);
       subscription.items.data.forEach(item => {
@@ -670,6 +716,10 @@ async function internalRetrieveSubscription(stripe, data, config, customerId, us
       return false;
     }
   });
+  if (Stdlib_Option.isNone(s)) {
+    console.log("No existing subscriptions \"" + config.ref + "\" found for customer \"" + customerId + "\" with the provided data.");
+  }
+  return s;
 }
 
 function retrieveCustomer(stripe, config, data) {
@@ -682,25 +732,77 @@ async function retrieveSubscriptionWithCustomer(stripe, config, data) {
   if (customer === undefined) {
     return {
       customer: undefined,
-      subscription: undefined
+      subscription: undefined,
+      preset: undefined
     };
+  }
+  let preset = customer.metadata[toPresetKey(config, processedData)];
+  let preset$1;
+  if (preset !== undefined) {
+    let presetSchema = toPresetSchema(config);
+    try {
+      let match = S$RescriptSchema.parseJsonStringOrThrow(preset, presetSchema);
+      let startedAt = match[1];
+      preset$1 = {
+        config: config,
+        data: data,
+        plan: match[0],
+        billPastUsage: startedAt !== undefined ? ({
+            startedAt: Primitive_option.valFromOption(startedAt)
+          }) : undefined
+      };
+    } catch (raw_exn) {
+      let exn = Primitive_exceptions.internalToException(raw_exn);
+      console.log("Failed to parse preset \"" + preset + "\" for \"" + config.ref + "\" subscription.", exn);
+      preset$1 = undefined;
+    }
+  } else {
+    preset$1 = undefined;
   }
   let subscription = await internalRetrieveSubscription(stripe, processedData, config, customer.id, undefined);
   if (subscription !== undefined) {
     return {
       customer: customer,
-      subscription: subscription
+      subscription: subscription,
+      preset: preset$1
     };
   } else {
     return {
       customer: customer,
-      subscription: undefined
+      subscription: undefined,
+      preset: preset$1
     };
   }
 }
 
 async function retrieveSubscription(stripe, config, data) {
   return (await retrieveSubscriptionWithCustomer(stripe, config, data)).subscription;
+}
+
+async function preset(stripe, preset$1) {
+  let processedData = processData(preset$1.data, preset$1.config);
+  let presetKey = toPresetKey(preset$1.config, processedData);
+  let preset$2 = S$RescriptSchema.reverseConvertToJsonStringOrThrow([
+    preset$1.plan,
+    Stdlib_Option.map(preset$1.billPastUsage, v => v.startedAt)
+  ], toPresetSchema(preset$1.config), undefined);
+  let metadata = {};
+  metadata[presetKey] = preset$2;
+  let c = await findByMetadata$1(stripe, processedData.customerMetadata);
+  if (c !== undefined) {
+    console.log("Setting preset for the existing customer...");
+    let c$1 = await stripe.customers.update(c.id, {
+      metadata: metadata
+    });
+    console.log("Successfully set preset for the existing customer");
+    return c$1;
+  }
+  console.log("Creating a new customer...");
+  let c$2 = await stripe.customers.create({
+    metadata: Object.assign(metadata, processedData.customerMetadata)
+  });
+  console.log("Successfully created a new customer with id: " + c$2.id);
+  return c$2;
 }
 
 async function createHostedCheckoutSession(stripe, params) {
@@ -779,18 +881,7 @@ async function createHostedCheckoutSession(stripe, params) {
   } else {
     products$1 = Stdlib_Exn.raiseError("Plan \"" + planId + "\" doesn't have any products configured");
   }
-  let c = await findByMetadata$1(stripe, data.customerMetadata);
-  let customer;
-  if (c !== undefined) {
-    customer = c;
-  } else {
-    console.log("Creating a new customer...");
-    let c$1 = await stripe.customers.create({
-      metadata: data.customerMetadata
-    });
-    console.log("Successfully created a new customer with id: " + c$1.id);
-    customer = c$1;
-  }
+  let customer = await findOrCreateByMetadata(stripe, data.customerMetadata);
   let usedCustomerMeters = new Set();
   let subscription = await internalRetrieveSubscription(stripe, data, params.config, customer.id, Primitive_option.some(usedCustomerMeters));
   if (subscription !== undefined) {
@@ -869,6 +960,7 @@ let Billing = {
   retrieveCustomer: retrieveCustomer,
   retrieveSubscriptionWithCustomer: retrieveSubscriptionWithCustomer,
   retrieveSubscription: retrieveSubscription,
+  preset: preset,
   createHostedCheckoutSession: createHostedCheckoutSession,
   verify: verify
 };
