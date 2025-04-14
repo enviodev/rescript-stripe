@@ -1157,11 +1157,11 @@ module Billing = {
 
   %%private(
     let toPresetKey = (config, processedData) => {
-      let key = ref(`#preset:${config.ref}`)
+      let key = ref(`##${config.ref}`)
       processedData["presetLookupFields"]->Array.forEach(name => {
         key := `${key.contents}:${processedData["dict"]->Dict.getUnsafe(name)}`
       })
-      key.contents
+      key.contents->String.slice(~start=0, ~end=40)
     }
 
     let startedAtSchema = S.union([

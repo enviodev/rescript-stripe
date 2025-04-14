@@ -621,12 +621,12 @@ function calculatePastUsageBill(priceAmount, startedAt, now, interval) {
 
 function toPresetKey(config, processedData) {
   let key = {
-    contents: "#preset:" + config.ref
+    contents: "##" + config.ref
   };
   processedData.presetLookupFields.forEach(name => {
     key.contents = key.contents + ":" + processedData.dict[name];
   });
-  return key.contents;
+  return key.contents.slice(0, 40);
 }
 
 let startedAtSchema = S$RescriptSchema.union([
