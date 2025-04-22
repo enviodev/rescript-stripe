@@ -976,7 +976,19 @@ module Checkout = {
       billingCycleAnchor?: int,
     }
 
+    type automaticTaxParams = {enabled: bool}
+
+    type customerUpdateParams = {
+      address?: [#auto | #never],
+      name?: [#auto | #never],
+      shipping?: [#auto | #never],
+    }
+
     type createParams = {
+      @as("automatic_tax")
+      automaticTax?: automaticTaxParams,
+      @as("customer_update")
+      customerUpdate?: customerUpdateParams,
       mode: mode,
       @as("success_url")
       successUrl?: string,
@@ -1402,6 +1414,7 @@ module Billing = {
     cancelUrl?: string,
     billingCycleAnchor?: int,
     interval?: Price.interval,
+    automaticTax?: Checkout.Session.automaticTaxParams,
     data: 'data,
     plan: 'plan,
     description?: string,
@@ -1538,8 +1551,14 @@ module Billing = {
       `Creating a new checkout session for subscription "${params.config.ref}" plan "${planId}"...`,
     )
     let session = await stripe->Checkout.Session.create({
+      automaticTax: ?params.automaticTax,
       mode: Checkout.Session.Subscription,
       customer: customer.id,
+      customerUpdate: {
+        address: #auto,
+        name: #auto,
+        shipping: #auto,
+      },
       consentCollection: ?switch params.config.termsOfServiceConsent {
       | Some(true) => Some({Checkout.Session.termsOfService: Required})
       | _ => None

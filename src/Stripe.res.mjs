@@ -895,6 +895,12 @@ async function createHostedCheckoutSession(stripe, params) {
   console.log("Creating a new checkout session for subscription \"" + params.config.ref + "\" plan \"" + planId + "\"...");
   let match$1 = params.config.termsOfServiceConsent;
   let session = await stripe.checkout.sessions.create({
+    automatic_tax: params.automaticTax,
+    customer_update: {
+      address: "auto",
+      name: "auto",
+      shipping: "auto"
+    },
     mode: "subscription",
     success_url: params.successUrl,
     cancel_url: params.cancelUrl,
