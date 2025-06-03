@@ -1440,7 +1440,7 @@ module Billing = {
             },
             tag: ({fieldName, coereced}, value) => {
               planMetadataFields->Array.push(fieldName)->ignore
-              let _ = s.field(fieldName, coereced->S.coerce(S.literal(value)))
+              let _ = s.field(fieldName, S.literal(value->S.reverseConvertOrThrow(coereced)))
             },
             // We don't need the data in schema,
             // only for typesystem

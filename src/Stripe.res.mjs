@@ -825,7 +825,7 @@ async function createHostedCheckoutSession(stripe, params) {
         tag: (param, value) => {
           let fieldName = param.fieldName;
           planMetadataFields.push(fieldName);
-          s.f(fieldName, S$RescriptSchema.coerce(param.coereced, S$RescriptSchema.literal(value)));
+          s.f(fieldName, S$RescriptSchema.literal(S$RescriptSchema.reverseConvertOrThrow(value, param.coereced)));
         },
         matches: schema => {
           matchesCounter.contents = matchesCounter.contents + 1 | 0;
