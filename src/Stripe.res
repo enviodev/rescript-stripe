@@ -254,7 +254,14 @@ module Meter = {
   @scope(("billing", "meters")) @send
   external create: (stripe, createParams) => promise<t> = "create"
 
-  type listParams = {status?: status, limit?: int}
+  type listParams = {
+    status?: status,
+    limit?: int,
+    @as("starting_after")
+    startingAfter?: string,
+    @as("ending_before")
+    endingBefore?: string,
+  }
   @scope(("billing", "meters")) @send
   external list: (stripe, listParams) => promise<page<t>> = "list"
 }
@@ -343,7 +350,15 @@ module Price = {
   @scope("prices") @send
   external update: (stripe, string, updateParams) => promise<t> = "update"
 
-  type listParams = {active?: bool, product?: string, limit?: int}
+  type listParams = {
+    active?: bool,
+    product?: string,
+    limit?: int,
+    @as("starting_after")
+    startingAfter?: string,
+    @as("ending_before")
+    endingBefore?: string,
+  }
   @scope("prices") @send
   external list: (stripe, listParams) => promise<page<t>> = "list"
 }
@@ -876,6 +891,10 @@ module Subscription = {
     price?: string,
     status?: status,
     limit?: int,
+    @as("starting_after")
+    startingAfter?: string,
+    @as("ending_before")
+    endingBefore?: string,
   }
   @scope("subscriptions") @send
   external list: (stripe, listParams) => promise<page<t>> = "list"
