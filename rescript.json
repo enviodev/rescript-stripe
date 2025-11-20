@@ -15,7 +15,7 @@
     "in-source": true
   },
   "suffix": ".res.mjs",
-  "bsc-flags": ["-open RescriptSchema"],
-  "bs-dependencies": ["rescript-schema"],
-  "bs-dev-dependencies": ["@dzakh/rescript-ava"]
+  "compiler-flags": ["-open RescriptSchema"],
+  "dependencies": ["rescript-schema"],
+  "dev-dependencies": ["@dzakh/rescript-ava"]
 }

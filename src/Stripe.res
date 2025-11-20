@@ -78,13 +78,12 @@ let makeFindByMetadata = (
     }
 
     let rec lookup = async (~startingAfter) => {
-      let page =
-        (await stripe
-        ->list({
+      let page = (
+        await stripe->list({
           limit: 1000,
           ?startingAfter,
-        }))
-        ->(Obj.magic: page<'item> => page<objectWithMetadata>)
+        })
+      )->(Obj.magic: page<'item> => page<objectWithMetadata>)
       updateCache(page.data, ~hasMore=page.hasMore, ~isCatchUp=false)
       let match =
         page.data
@@ -114,7 +113,7 @@ let makeFindByMetadata = (
         )["autoPagingToArray"]({limit: 10000})
       )->(Obj.magic: array<'item> => array<objectWithMetadata>)
       if data->Array.length === 10000 {
-        Exn.raiseError(`Too many new ${name}s to cache.`)
+        JsError.throwWithMessage(`Too many new ${name}s to cache.`)
       }
       updateCache(data, ~hasMore=false, ~isCatchUp=true)
       data->Array.find(matches)
@@ -313,8 +312,6 @@ module Price = {
 
   type recurringParams = {
     interval: interval,
-    @as("aggregate_usage")
-    aggregateUsage?: unknown,
     @as("interval_count")
     intervalCount?: int,
     @as("meter")
@@ -493,18 +490,19 @@ module ProductCatalog = {
         }),
         interval,
       ) {
-      | ([], None) => Exn.raiseError(`Product "${productConfig.name}" doesn't have any prices`)
+      | ([], None) =>
+        JsError.throwWithMessage(`Product "${productConfig.name}" doesn't have any prices`)
       | ([], Some(interval)) =>
-        Exn.raiseError(
+        JsError.throwWithMessage(
           `Product "${productConfig.name}" doesn't have prices for interval "${(interval :> string)}"`,
         )
       | ([price], _) => price
       | (_, None) =>
-        Exn.raiseError(
+        JsError.throwWithMessage(
           `Product "${productConfig.name}" has multiple prices but no interval specified. Use "interval" param to dynamically choose which price use for the plan`,
         )
       | (_, Some(interval)) =>
-        Exn.raiseError(
+        JsError.throwWithMessage(
           `Product "${productConfig.name}" has multiple prices for interval "${(interval :> string)}"`,
         )
       }
@@ -577,7 +575,7 @@ module ProductCatalog = {
         ->Int.toString} product "${productConfig.ref}" active prices`,
     )
     if prices.hasMore {
-      Exn.raiseError(
+      JsError.throwWithMessage(
         `The pagination on prices is not supported yet. Product "${productConfig.ref}" has to many active prices`,
       )
     }
@@ -590,12 +588,12 @@ module ProductCatalog = {
           let meters = switch meters {
           | Some(m) => m
           | None =>
-            Exn.raiseError(`The "meters" argument is required when product catalog contains a Metered price`)
+            JsError.throwWithMessage(`The "meters" argument is required when product catalog contains a Metered price`)
           }
           let usedCustomerMeters = switch usedCustomerMeters {
           | Some(m) => m
           | None =>
-            Exn.raiseError(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`)
+            JsError.throwWithMessage(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`)
           }
           let rec getEventName = (~meterRef, ~counter=0) => {
             let eventName = switch counter {
@@ -690,7 +688,7 @@ module ProductCatalog = {
             let usedCustomerMeters = switch usedCustomerMeters {
             | Some(m) => m
             | None =>
-              Exn.raiseError(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`)
+              JsError.throwWithMessage(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`)
             }
 
             priceRecurring.usageType === Metered &&
@@ -759,10 +757,9 @@ module ProductCatalog = {
       None
     }
 
-    let products =
-      await productCatalog.products
-      ->Array.map(p => stripe->syncProduct(p, ~meters?, ~usedCustomerMeters?, ~interval?))
-      ->Promise.all
+    let products = await productCatalog.products
+    ->Array.map(p => stripe->syncProduct(p, ~meters?, ~usedCustomerMeters?, ~interval?))
+    ->Promise.all
     Console.log(`Successfully finished syncing products`)
     products
   }
@@ -865,8 +862,6 @@ module Subscription = {
   type item = {
     id: string,
     object: string,
-    @as("billing_thresholds")
-    billingThresholds: null<unknown>,
     metadata: dict<string>,
     created: int,
     subscription: string,
@@ -877,10 +872,6 @@ module Subscription = {
     metadata: dict<string>,
     status: status,
     customer: string,
-    @as("current_period_end")
-    currentPeriodEnd: int,
-    @as("current_period_start")
-    currentPeriodStart: int,
     @as("cancel_at_period_end")
     cancelAtPeriodEnd: bool,
     items: page<item>,
@@ -1068,7 +1059,7 @@ module Webhook = {
       | _ => Unknown(event)
       }->Ok
     } catch {
-    | Exn.Error(err) => Error(err->Exn.message->Option.getUnsafe)
+    | JsExn(err) => Error(err->JsExn.message->Option.getUnsafe)
     }
   }
 }
@@ -1126,7 +1117,7 @@ module Billing = {
       limit: 100,
     }) {
     | {hasMore: true} =>
-      Exn.raiseError(`Found more than 100 subscriptions, which is not supported yet`)
+      JsError.throwWithMessage(`Found more than 100 subscriptions, which is not supported yet`)
     | {data: subscriptions} =>
       subscriptions
       ->Array.filter(subscription => {
@@ -1146,7 +1137,7 @@ module Billing = {
     | Some(Year) => priceAmount->Int.toFloat / 12.
     | Some(Month) => priceAmount->Int.toFloat
     | _ =>
-      Exn.raiseError(
+      JsError.throwWithMessage(
         "The past usage bill only supports subscriptions with yearly or monthly intervals",
       )
     }
@@ -1253,7 +1244,7 @@ module Billing = {
       })
 
       if customerLookupFields->Array.length === 0 {
-        Exn.raiseError(
+        JsError.throwWithMessage(
           "The data schema must define at least one primary field with ~customerLookup=true",
         )
       }
@@ -1478,7 +1469,7 @@ module Billing = {
 
     let planId = rawPlan->Dict.getUnsafe(planField)
     let products = switch params.config.products(~data=params.data, ~plan=params.plan) {
-    | [] => Exn.raiseError(`Plan "${planId}" doesn't have any products configured`)
+    | [] => JsError.throwWithMessage(`Plan "${planId}" doesn't have any products configured`)
     | products =>
       switch params.billPastUsage {
       | Some({startedAt}) =>
@@ -1550,7 +1541,7 @@ module Billing = {
     ) {
     | None => Console.log(`Customer doesn't have an active "${params.config.ref}" subscription`)
     | Some(subscription) =>
-      Exn.raiseError(
+      JsError.throwWithMessage(
         `There's already an active "${params.config.ref}" subscription for ${data["primaryFields"]
           ->Array.map(name => `${name}=${data["dict"]->Dict.getUnsafe(name)}`)
           ->Array.join(", ")} with the "${subscription.metadata->Dict.getUnsafe(
@@ -1559,12 +1550,11 @@ module Billing = {
       )
     }
 
-    let productItems =
-      await stripe->ProductCatalog.sync(
-        {ProductCatalog.products: products},
-        ~usedCustomerMeters,
-        ~interval=?params.interval,
-      )
+    let productItems = await stripe->ProductCatalog.sync(
+      {ProductCatalog.products: products},
+      ~usedCustomerMeters,
+      ~interval=?params.interval,
+    )
 
     Console.log(
       `Creating a new checkout session for subscription "${params.config.ref}" plan "${planId}"...`,

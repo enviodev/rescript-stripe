@@ -10,20 +10,20 @@ importers:
     dependencies:
       rescript-schema:
         specifier: 9.3.0-rescript12.0
-        version: 9.3.0-rescript12.0(rescript@12.0.0-alpha.10)
+        version: 9.3.0-rescript12.0(rescript@12.0.0-rc.4)
       stripe:
-        specifier: 17.7.0
-        version: 17.7.0
+        specifier: 20.0.0
+        version: 20.0.0(@types/node@22.15.29)
     devDependencies:
       '@dzakh/rescript-ava':
         specifier: 3.1.0
-        version: 3.1.0(ava@6.2.0)(rescript@12.0.0-alpha.10)
+        version: 3.1.0(ava@6.2.0)(rescript@12.0.0-rc.4)
       ava:
         specifier: 6.2.0
         version: 6.2.0
       rescript:
-        specifier: 12.0.0-alpha.10
-        version: 12.0.0-alpha.10
+        specifier: 12.0.0-rc.4
+        version: 12.0.0-rc.4
 
 packages:
 
@@ -53,6 +53,39 @@ packages:
   '@nodelib/fs.walk@1.2.8':
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
+
+  '@rescript/darwin-arm64@12.0.0-rc.4':
+    resolution: {integrity: sha512-xQRamA9xILtFBHOU/Dzvwn8iSed0uniBdB6ideeUXGOnmQ/DcWALYt/aDVTFW+u3/3vG810mHDx+zQaZKOK7yA==}
+    engines: {node: '>=20.11.0'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@rescript/darwin-x64@12.0.0-rc.4':
+    resolution: {integrity: sha512-UUc0b/QjKWh+OmktaldHgm2ZxXkbD4G08Nodx3QyGGWRMTYkGI+vYA+DAPaZIEKFv19qJKo/zNZVBDpP8A3aPg==}
+    engines: {node: '>=20.11.0'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@rescript/linux-arm64@12.0.0-rc.4':
+    resolution: {integrity: sha512-ArQCYqaAAkCYwgBSTDAzqjmBMwszsQHfw5m901zOFawDJ858f2g/O6ocqEcfaLkC2DEO5DWIesiJGJHyfb+IFw==}
+    engines: {node: '>=20.11.0'}
+    cpu: [arm64]
+    os: [linux]
+
+  '@rescript/linux-x64@12.0.0-rc.4':
+    resolution: {integrity: sha512-bSIM+BDW3t338gNddNd56E4PVqr+Dee8B97hkK9SrcqfHOOogy+WgEtWV4j1Sjt8ChXOFdhsI4Ndd7q/G6taiA==}
+    engines: {node: '>=20.11.0'}
+    cpu: [x64]
+    os: [linux]
+
+  '@rescript/runtime@12.0.0-rc.4':
+    resolution: {integrity: sha512-t7Dix1XAnrI4HPOQBdGPTJc949/uM60j3N0u/BEmavQupqKd3+h4DUaF1rk4pFBrvAmg7+0yTt0mHnK0zI74BA==}
+
+  '@rescript/win32-x64@12.0.0-rc.4':
+    resolution: {integrity: sha512-9BnO+iUv7mHcYoR89Aux9hE3NhgLoocqauGQ9LHd24l+K0TZrWOlqOibXJgzExusKsbUdGyZ7zMuaJkQS89WCg==}
+    engines: {node: '>=20.11.0'}
+    cpu: [x64]
+    os: [win32]
 
   '@rollup/pluginutils@5.1.4':
     resolution: {integrity: sha512-USm05zrsFxYLPdWWq+K3STlWiT/3ELn3RcV5hJMghpeAIhxfsUIg6mt12CBJBInWMV4VneoV7SfGv8xIwo2qNQ==}
@@ -584,8 +617,8 @@ packages:
       rescript:
         optional: true
 
-  rescript@12.0.0-alpha.10:
-    resolution: {integrity: sha512-fD84x1q+2iyIAhANN9Nr5BiQM7BHLdbMTYNKgnawN4qol+wT/zX/IXoWP3T1LIu1D5nqVzhxF7k3txGXsD/0oQ==}
+  rescript@12.0.0-rc.4:
+    resolution: {integrity: sha512-LXWkh4wYgTQYkaofqlHye+OOv5e6GDX2A1PMqtSbKZEDQWbOiUQ7S2Hqx37PN0RVj15rtArK+t27NVfEw8k7sg==}
     engines: {node: '>=20.11.0'}
     hasBin: true
 
@@ -664,9 +697,14 @@ packages:
     resolution: {integrity: sha512-iq6eVVI64nQQTRYq2KtEg2d2uU7LElhTJwsH4YzIHZshxlgZms/wIc4VoDQTlG/IvVIrBKG06CrZnp0qv7hkcQ==}
     engines: {node: '>=12'}
 
-  stripe@17.7.0:
-    resolution: {integrity: sha512-aT2BU9KkizY9SATf14WhhYVv2uOapBWX0OFWF4xvcj1mPaNotlSc2CsxpS4DS46ZueSppmCF5BX1sNYBtwBvfw==}
-    engines: {node: '>=12.*'}
+  stripe@20.0.0:
+    resolution: {integrity: sha512-EaZeWpbJOCcDytdjKSwdrL5BxzbDGNueiCfHjHXlPdBQvLqoxl6AAivC35SPzTmVXJb5duXQlXFGS45H0+e6Gg==}
+    engines: {node: '>=16'}
+    peerDependencies:
+      '@types/node': '>=16'
+    peerDependenciesMeta:
+      '@types/node':
+        optional: true
 
   supertap@3.0.1:
     resolution: {integrity: sha512-u1ZpIBCawJnO+0QePsEiOknOfCRq0yERxiAchT0i4li0WHNUJbf0evXXSXOcCAR4M8iMDoajXYmstm/qO81Isw==}
@@ -741,10 +779,10 @@ packages:
 
 snapshots:
 
-  '@dzakh/rescript-ava@3.1.0(ava@6.2.0)(rescript@12.0.0-alpha.10)':
+  '@dzakh/rescript-ava@3.1.0(ava@6.2.0)(rescript@12.0.0-rc.4)':
     dependencies:
       ava: 6.2.0
-      rescript: 12.0.0-alpha.10
+      rescript: 12.0.0-rc.4
 
   '@isaacs/fs-minipass@4.0.1':
     dependencies:
@@ -775,6 +813,23 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.19.1
 
+  '@rescript/darwin-arm64@12.0.0-rc.4':
+    optional: true
+
+  '@rescript/darwin-x64@12.0.0-rc.4':
+    optional: true
+
+  '@rescript/linux-arm64@12.0.0-rc.4':
+    optional: true
+
+  '@rescript/linux-x64@12.0.0-rc.4':
+    optional: true
+
+  '@rescript/runtime@12.0.0-rc.4': {}
+
+  '@rescript/win32-x64@12.0.0-rc.4':
+    optional: true
+
   '@rollup/pluginutils@5.1.4':
     dependencies:
       '@types/estree': 1.0.7
@@ -788,6 +843,7 @@ snapshots:
   '@types/node@22.15.29':
     dependencies:
       undici-types: 6.21.0
+    optional: true
 
   '@vercel/nft@0.27.10':
     dependencies:
@@ -1245,11 +1301,19 @@ snapshots:
 
   require-directory@2.1.1: {}
 
-  rescript-schema@9.3.0-rescript12.0(rescript@12.0.0-alpha.10):
+  rescript-schema@9.3.0-rescript12.0(rescript@12.0.0-rc.4):
     optionalDependencies:
-      rescript: 12.0.0-alpha.10
+      rescript: 12.0.0-rc.4
 
-  rescript@12.0.0-alpha.10: {}
+  rescript@12.0.0-rc.4:
+    dependencies:
+      '@rescript/runtime': 12.0.0-rc.4
+    optionalDependencies:
+      '@rescript/darwin-arm64': 12.0.0-rc.4
+      '@rescript/darwin-x64': 12.0.0-rc.4
+      '@rescript/linux-arm64': 12.0.0-rc.4
+      '@rescript/linux-x64': 12.0.0-rc.4
+      '@rescript/win32-x64': 12.0.0-rc.4
 
   resolve-cwd@3.0.0:
     dependencies:
@@ -1332,10 +1396,11 @@ snapshots:
     dependencies:
       ansi-regex: 6.1.0
 
-  stripe@17.7.0:
+  stripe@20.0.0(@types/node@22.15.29):
     dependencies:
-      '@types/node': 22.15.29
       qs: 6.14.0
+    optionalDependencies:
+      '@types/node': 22.15.29
 
   supertap@3.0.1:
     dependencies:
@@ -1365,7 +1430,8 @@ snapshots:
 
   type-fest@0.13.1: {}
 
-  undici-types@6.21.0: {}
+  undici-types@6.21.0:
+    optional: true
 
   unicorn-magic@0.3.0: {}
 
