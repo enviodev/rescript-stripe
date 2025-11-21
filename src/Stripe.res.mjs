@@ -570,6 +570,14 @@ let Webhook = {
 
 let Plan = {};
 
+function getCurrentPeriodStart(subscription) {
+  return Stdlib_Option.getOrThrow(subscription.items.data[0], undefined).current_period_start;
+}
+
+function getCurrentPeriodEnd(subscription) {
+  return Stdlib_Option.getOrThrow(subscription.items.data[0], undefined).current_period_end;
+}
+
 let refField = "#subscription_ref";
 
 let planField = "#subscription_plan";
@@ -955,6 +963,8 @@ function verify(subscription, config) {
 
 let Billing = {
   Plan: Plan,
+  getCurrentPeriodStart: getCurrentPeriodStart,
+  getCurrentPeriodEnd: getCurrentPeriodEnd,
   refField: refField,
   planField: planField,
   listSubscriptions: listSubscriptions,

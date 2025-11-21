@@ -10,20 +10,20 @@ importers:
     dependencies:
       rescript-schema:
         specifier: 9.3.0-rescript12.0
-        version: 9.3.0-rescript12.0(rescript@12.0.0-rc.4)
+        version: 9.3.0-rescript12.0(rescript@12.0.0-rc.5)
       stripe:
         specifier: 20.0.0
         version: 20.0.0(@types/node@22.15.29)
     devDependencies:
       '@dzakh/rescript-ava':
         specifier: 3.1.0
-        version: 3.1.0(ava@6.2.0)(rescript@12.0.0-rc.4)
+        version: 3.1.0(ava@6.2.0)(rescript@12.0.0-rc.5)
       ava:
         specifier: 6.2.0
         version: 6.2.0
       rescript:
-        specifier: 12.0.0-rc.4
-        version: 12.0.0-rc.4
+        specifier: 12.0.0-rc.5
+        version: 12.0.0-rc.5
 
 packages:
 
@@ -54,35 +54,35 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@rescript/darwin-arm64@12.0.0-rc.4':
-    resolution: {integrity: sha512-xQRamA9xILtFBHOU/Dzvwn8iSed0uniBdB6ideeUXGOnmQ/DcWALYt/aDVTFW+u3/3vG810mHDx+zQaZKOK7yA==}
+  '@rescript/darwin-arm64@12.0.0-rc.5':
+    resolution: {integrity: sha512-on94/D8LNX8+SwKKvVd5Zj7amtgzk+BRGiEw+5XW7Kz+hW/S0jwGvfVg8RlDweRI9duEkab4quesfEN4VuW+JA==}
     engines: {node: '>=20.11.0'}
     cpu: [arm64]
     os: [darwin]
 
-  '@rescript/darwin-x64@12.0.0-rc.4':
-    resolution: {integrity: sha512-UUc0b/QjKWh+OmktaldHgm2ZxXkbD4G08Nodx3QyGGWRMTYkGI+vYA+DAPaZIEKFv19qJKo/zNZVBDpP8A3aPg==}
+  '@rescript/darwin-x64@12.0.0-rc.5':
+    resolution: {integrity: sha512-tfSOWR9fhHcVlV04t7qsL1pka64p9oo+5J9kNQeE6j/h3r5qnjg32M+XQl9hDKfg/btqf0KoeyDq/rQXFVsDSA==}
     engines: {node: '>=20.11.0'}
     cpu: [x64]
     os: [darwin]
 
-  '@rescript/linux-arm64@12.0.0-rc.4':
-    resolution: {integrity: sha512-ArQCYqaAAkCYwgBSTDAzqjmBMwszsQHfw5m901zOFawDJ858f2g/O6ocqEcfaLkC2DEO5DWIesiJGJHyfb+IFw==}
+  '@rescript/linux-arm64@12.0.0-rc.5':
+    resolution: {integrity: sha512-6YHdSUYU+vBYXCqCxQve3CLHUqp8ojUV9476n7qxdYM36bWTvglnZae/SqMhGASwhviyXFumJDH15FLfUGpiZg==}
     engines: {node: '>=20.11.0'}
     cpu: [arm64]
     os: [linux]
 
-  '@rescript/linux-x64@12.0.0-rc.4':
-    resolution: {integrity: sha512-bSIM+BDW3t338gNddNd56E4PVqr+Dee8B97hkK9SrcqfHOOogy+WgEtWV4j1Sjt8ChXOFdhsI4Ndd7q/G6taiA==}
+  '@rescript/linux-x64@12.0.0-rc.5':
+    resolution: {integrity: sha512-qS/1x6v2CdVuDIgMF3BnyxSwQ/QGwrrkhH4L1wjgS58STURDlwSxsEeS/tZca1v8TFbRKbMOi4KaWyyRuivgRA==}
     engines: {node: '>=20.11.0'}
     cpu: [x64]
     os: [linux]
 
-  '@rescript/runtime@12.0.0-rc.4':
-    resolution: {integrity: sha512-t7Dix1XAnrI4HPOQBdGPTJc949/uM60j3N0u/BEmavQupqKd3+h4DUaF1rk4pFBrvAmg7+0yTt0mHnK0zI74BA==}
+  '@rescript/runtime@12.0.0-rc.5':
+    resolution: {integrity: sha512-IkjXDr2hlMJDlJCVk1QlDR3r1sSKAJg8xnBq3Uh4IO0FToeMmeSYv/xh0j0YrInzCwgq6RmYgsyYS+ornEepJw==}
 
-  '@rescript/win32-x64@12.0.0-rc.4':
-    resolution: {integrity: sha512-9BnO+iUv7mHcYoR89Aux9hE3NhgLoocqauGQ9LHd24l+K0TZrWOlqOibXJgzExusKsbUdGyZ7zMuaJkQS89WCg==}
+  '@rescript/win32-x64@12.0.0-rc.5':
+    resolution: {integrity: sha512-kWAjl9nAsUntpMERAJE3c6EKRR6hl6tVB/9LzPkgvBLrX8m5FkPGUeeD4UJihTD2+BxC4BfLak4yOrENqMBA9g==}
     engines: {node: '>=20.11.0'}
     cpu: [x64]
     os: [win32]
@@ -617,8 +617,8 @@ packages:
       rescript:
         optional: true
 
-  rescript@12.0.0-rc.4:
-    resolution: {integrity: sha512-LXWkh4wYgTQYkaofqlHye+OOv5e6GDX2A1PMqtSbKZEDQWbOiUQ7S2Hqx37PN0RVj15rtArK+t27NVfEw8k7sg==}
+  rescript@12.0.0-rc.5:
+    resolution: {integrity: sha512-4GZRZVbVLD/EoJskfmkVnWPBuA39njQahB+Qy69aeIE20x29AYbW9tuWYl9SE3Ul2zxbTe2Ymg//EQNFN2eWDQ==}
     engines: {node: '>=20.11.0'}
     hasBin: true
 
@@ -779,10 +779,10 @@ packages:
 
 snapshots:
 
-  '@dzakh/rescript-ava@3.1.0(ava@6.2.0)(rescript@12.0.0-rc.4)':
+  '@dzakh/rescript-ava@3.1.0(ava@6.2.0)(rescript@12.0.0-rc.5)':
     dependencies:
       ava: 6.2.0
-      rescript: 12.0.0-rc.4
+      rescript: 12.0.0-rc.5
 
   '@isaacs/fs-minipass@4.0.1':
     dependencies:
@@ -813,21 +813,21 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.19.1
 
-  '@rescript/darwin-arm64@12.0.0-rc.4':
+  '@rescript/darwin-arm64@12.0.0-rc.5':
     optional: true
 
-  '@rescript/darwin-x64@12.0.0-rc.4':
+  '@rescript/darwin-x64@12.0.0-rc.5':
     optional: true
 
-  '@rescript/linux-arm64@12.0.0-rc.4':
+  '@rescript/linux-arm64@12.0.0-rc.5':
     optional: true
 
-  '@rescript/linux-x64@12.0.0-rc.4':
+  '@rescript/linux-x64@12.0.0-rc.5':
     optional: true
 
-  '@rescript/runtime@12.0.0-rc.4': {}
+  '@rescript/runtime@12.0.0-rc.5': {}
 
-  '@rescript/win32-x64@12.0.0-rc.4':
+  '@rescript/win32-x64@12.0.0-rc.5':
     optional: true
 
   '@rollup/pluginutils@5.1.4':
@@ -1301,19 +1301,19 @@ snapshots:
 
   require-directory@2.1.1: {}
 
-  rescript-schema@9.3.0-rescript12.0(rescript@12.0.0-rc.4):
+  rescript-schema@9.3.0-rescript12.0(rescript@12.0.0-rc.5):
     optionalDependencies:
-      rescript: 12.0.0-rc.4
+      rescript: 12.0.0-rc.5
 
-  rescript@12.0.0-rc.4:
+  rescript@12.0.0-rc.5:
     dependencies:
-      '@rescript/runtime': 12.0.0-rc.4
+      '@rescript/runtime': 12.0.0-rc.5
     optionalDependencies:
-      '@rescript/darwin-arm64': 12.0.0-rc.4
-      '@rescript/darwin-x64': 12.0.0-rc.4
-      '@rescript/linux-arm64': 12.0.0-rc.4
-      '@rescript/linux-x64': 12.0.0-rc.4
-      '@rescript/win32-x64': 12.0.0-rc.4
+      '@rescript/darwin-arm64': 12.0.0-rc.5
+      '@rescript/darwin-x64': 12.0.0-rc.5
+      '@rescript/linux-arm64': 12.0.0-rc.5
+      '@rescript/linux-x64': 12.0.0-rc.5
+      '@rescript/win32-x64': 12.0.0-rc.5
 
   resolve-cwd@3.0.0:
     dependencies:

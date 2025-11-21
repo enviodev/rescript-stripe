@@ -292,6 +292,7 @@ module Price = {
     meter: null<string>,
     @as("interval_count") intervalCount: int,
     @as("usage_type") usageType: usageType,
+    @as("trial_period_days") trialPeriodDays: null<unknown>,
   }
 
   type t = {
@@ -302,7 +303,6 @@ module Price = {
     nickname: null<string>,
     product: string,
     recurring: null<recurring>,
-    interval: interval,
     created: int,
     @as("lookup_key")
     lookupKey: null<string>,
@@ -866,6 +866,10 @@ module Subscription = {
     created: int,
     subscription: string,
     price: itemPrice,
+    @as("current_period_end")
+    currentPeriodEnd: int,
+    @as("current_period_start")
+    currentPeriodStart: int,
   }
   type t = {
     id: string,
@@ -964,6 +968,20 @@ module Checkout = {
     type t = {
       id: string,
       url: null<string>,
+      @as("expires_at")
+      expiresAt: int,
+      @as("success_url")
+      successUrl: null<string>,
+      @as("cancel_url")
+      cancelUrl: null<string>,
+      @as("allow_promotion_codes")
+      allowPromotionCodes: null<bool>,
+      @as("amount_subtotal")
+      amountSubtotal: null<int>,
+      @as("amount_total")
+      amountTotal: null<int>,
+      @as("customer")
+      customer: null<string>,
     }
 
     type termsOfService = | @as("none") None | @as("required") Required
@@ -1106,6 +1124,14 @@ module Billing = {
     customer: option<Customer.t>,
     subscription: option<subscription<t<'data, 'plan>>>,
     preset: option<preset<'data, 'plan>>,
+  }
+
+  let getCurrentPeriodStart = (subscription: subscription<'config>) => {
+    (subscription.items.data->Array.get(0)->Option.getOrThrow).currentPeriodStart
+  }
+
+  let getCurrentPeriodEnd = (subscription: subscription<'config>) => {
+    (subscription.items.data->Array.get(0)->Option.getOrThrow).currentPeriodEnd
   }
 
   let refField = "#subscription_ref"
