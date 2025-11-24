@@ -512,6 +512,10 @@ let CustomerPortal = {
   prefillEmail: prefillEmail
 };
 
+let InvoiceItem = {};
+
+let Invoice = {};
+
 let Session = {};
 
 let Checkout = {
@@ -1005,6 +1009,8 @@ export {
   Customer,
   Subscription,
   CustomerPortal,
+  InvoiceItem,
+  Invoice,
   Checkout,
   Webhook,
   Billing,

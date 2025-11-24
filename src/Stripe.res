@@ -963,6 +963,46 @@ module CustomerPortal = {
   }
 }
 
+module InvoiceItem = {
+  type t = private {id: string}
+
+  type period = {
+    start: int,
+    end: int,
+  }
+
+  type createParams = {
+    customer: string,
+    amount?: int,
+    currency?: currency,
+    description?: string,
+    metadata?: dict<string>,
+    period?: period,
+  }
+  @scope("invoiceItems") @send
+  external create: (stripe, createParams) => promise<t> = "create"
+}
+
+module Invoice = {
+  type t = private {id: string}
+
+  type pendingInvoiceItemsBehavior = | @as("exclude") Exclude | @as("include") Include
+
+  type createParams = {
+    customer: string,
+    @as("auto_advance")
+    autoAdvance?: bool,
+    @as("pending_invoice_items_behavior")
+    pendingInvoiceItemsBehavior?: pendingInvoiceItemsBehavior,
+    description?: string,
+  }
+  @scope("invoices") @send
+  external create: (stripe, createParams) => promise<t> = "create"
+
+  @scope("invoices") @send
+  external finalizeInvoice: (stripe, string) => promise<t> = "finalizeInvoice"
+}
+
 module Checkout = {
   module Session = {
     type t = {
