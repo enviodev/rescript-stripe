@@ -964,12 +964,12 @@ module CustomerPortal = {
 }
 
 module InvoiceItem = {
-  type t = private {id: string}
-
   type period = {
     start: int,
     end: int,
   }
+
+  type t = private {id: string, metadata: dict<string>, amount: int, period: period}
 
   type createParams = {
     customer: string,
@@ -981,6 +981,21 @@ module InvoiceItem = {
   }
   @scope("invoiceItems") @send
   external create: (stripe, createParams) => promise<t> = "create"
+
+  type updateParams = {metadata?: dict<string>}
+  @scope("invoiceItems") @send
+  external update: (stripe, string, updateParams) => promise<t> = "update"
+
+  type listParams = {
+    customer?: string,
+    limit?: int,
+    @as("starting_after")
+    startingAfter?: string,
+    @as("ending_before")
+    endingBefore?: string,
+  }
+  @scope("invoiceItems") @send
+  external list: (stripe, listParams) => promise<page<t>> = "list"
 }
 
 module Invoice = {
