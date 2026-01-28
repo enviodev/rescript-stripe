@@ -1095,7 +1095,25 @@ module Checkout = {
 module Webhook = {
   type data<'object> = {object: 'object}
 
-  type genericEvent<'object> = {
+  /** Previous attributes included in update events, showing what changed */
+  type subscriptionPreviousAttributes = {
+    metadata?: dict<string>,
+    status?: Subscription.status,
+    @as("cancel_at_period_end")
+    cancelAtPeriodEnd?: bool,
+    @as("current_period_end")
+    currentPeriodEnd?: int,
+    @as("current_period_start")
+    currentPeriodStart?: int,
+  }
+
+  type updateData<'object, 'previousAttributes> = {
+    object: 'object,
+    @as("previous_attributes")
+    previousAttributes: 'previousAttributes,
+  }
+
+  type genericEvent<'data> = {
     id: string,
     @as("type")
     type_: string,
@@ -1106,14 +1124,14 @@ module Webhook = {
     livemode: bool,
     @as("pending_webhooks")
     pendingWebhooks: int,
-    data: data<'object>,
+    data: 'data,
   }
 
   type event =
-    | CustomerSubscriptionCreated(genericEvent<Subscription.t>)
-    | CustomerSubscriptionUpdated(genericEvent<Subscription.t>)
-    | CustomerSubscriptionDeleted(genericEvent<Subscription.t>)
-    | Unknown(genericEvent<dict<unknown>>)
+    | CustomerSubscriptionCreated(genericEvent<data<Subscription.t>>)
+    | CustomerSubscriptionUpdated(genericEvent<updateData<Subscription.t, subscriptionPreviousAttributes>>)
+    | CustomerSubscriptionDeleted(genericEvent<data<Subscription.t>>)
+    | Unknown(genericEvent<data<dict<unknown>>>)
 
   @scope("webhooks") @send
   external constructEvent: (
@@ -1121,7 +1139,7 @@ module Webhook = {
     ~body: string,
     ~sig: string,
     ~secret: string,
-  ) => genericEvent<dict<unknown>> = "constructEvent"
+  ) => genericEvent<data<dict<unknown>>> = "constructEvent"
   let constructEvent = (stripe, ~body, ~sig, ~secret) => {
     try {
       let event = constructEvent(stripe, ~body, ~sig, ~secret)
