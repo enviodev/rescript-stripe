@@ -1734,7 +1734,14 @@ module Billing = {
           customer: subscription.customer,
           items: subscription.items,
           metadata: switch previousAttributes.metadata {
-          | Some(prevMetadata) => prevMetadata
+          | Some(prevMetadata) => {
+              // Merge current metadata with previous changed fields to reconstruct full previous state
+              let merged = Dict.copy(subscription.metadata)
+              prevMetadata->Dict.forEachWithKey((value, key) => {
+                merged->Dict.set(key, value)
+              })
+              merged
+            }
           | None => subscription.metadata
           },
           status: switch previousAttributes.status {
