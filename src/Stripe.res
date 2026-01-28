@@ -1095,6 +1095,24 @@ module Checkout = {
 module Webhook = {
   type data<'object> = {object: 'object}
 
+  /** Previous attributes included in update events, showing what changed */
+  type subscriptionPreviousAttributes = {
+    metadata?: dict<string>,
+    status?: Subscription.status,
+    @as("cancel_at_period_end")
+    cancelAtPeriodEnd?: bool,
+    @as("current_period_end")
+    currentPeriodEnd?: int,
+    @as("current_period_start")
+    currentPeriodStart?: int,
+  }
+
+  type updateData<'object, 'previousAttributes> = {
+    object: 'object,
+    @as("previous_attributes")
+    previousAttributes: 'previousAttributes,
+  }
+
   type genericEvent<'object> = {
     id: string,
     @as("type")
@@ -1109,11 +1127,73 @@ module Webhook = {
     data: data<'object>,
   }
 
+  type genericUpdateEvent<'object, 'previousAttributes> = {
+    id: string,
+    @as("type")
+    type_: string,
+    object: string,
+    @as("api_version")
+    apiVersion: string,
+    created: int,
+    livemode: bool,
+    @as("pending_webhooks")
+    pendingWebhooks: int,
+    data: updateData<'object, 'previousAttributes>,
+  }
+
   type event =
     | CustomerSubscriptionCreated(genericEvent<Subscription.t>)
-    | CustomerSubscriptionUpdated(genericEvent<Subscription.t>)
+    | CustomerSubscriptionUpdated(genericUpdateEvent<Subscription.t, subscriptionPreviousAttributes>)
     | CustomerSubscriptionDeleted(genericEvent<Subscription.t>)
     | Unknown(genericEvent<dict<unknown>>)
+
+  type metadataChange = {
+    key: string,
+    previousValue: option<string>,
+    currentValue: option<string>,
+  }
+
+  /** Check if metadata was changed in a subscription update event */
+  let metadataChanged = (event: genericUpdateEvent<Subscription.t, subscriptionPreviousAttributes>) => {
+    event.data.previousAttributes.metadata->Option.isSome
+  }
+
+  /** Get the previous metadata from a subscription update event, if it changed */
+  let getPreviousMetadata = (event: genericUpdateEvent<Subscription.t, subscriptionPreviousAttributes>) => {
+    event.data.previousAttributes.metadata
+  }
+
+  /** Get detailed metadata changes between previous and current state */
+  let getMetadataChanges = (event: genericUpdateEvent<Subscription.t, subscriptionPreviousAttributes>) => {
+    switch event.data.previousAttributes.metadata {
+    | None => []
+    | Some(previousMetadata) =>
+      let currentMetadata = event.data.object.metadata
+      let allKeys = Set.make()
+      previousMetadata->Dict.keysToArray->Array.forEach(k => allKeys->Set.add(k)->ignore)
+      currentMetadata->Dict.keysToArray->Array.forEach(k => allKeys->Set.add(k)->ignore)
+      allKeys
+      ->Set.values
+      ->Iterator.toArray
+      ->Array.filterMap(key => {
+        let prev = previousMetadata->Dict.get(key)
+        let curr = currentMetadata->Dict.get(key)
+        if prev != curr {
+          Some({key, previousValue: prev, currentValue: curr})
+        } else {
+          None
+        }
+      })
+    }
+  }
+
+  /** Get the previous value of a specific metadata key, if it was changed */
+  let getPreviousMetadataValue = (
+    event: genericUpdateEvent<Subscription.t, subscriptionPreviousAttributes>,
+    key: string,
+  ) => {
+    event.data.previousAttributes.metadata->Option.flatMap(meta => meta->Dict.get(key))
+  }
 
   @scope("webhooks") @send
   external constructEvent: (
