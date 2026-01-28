@@ -965,6 +965,34 @@ function verify(subscription, config) {
   }
 }
 
+function verifyUpdate(subscription, previousAttributes, config) {
+  let verifiedSubscription = verify(subscription, config);
+  if (verifiedSubscription === undefined) {
+    return;
+  }
+  let prevMetadata = previousAttributes.metadata;
+  let prevStatus = previousAttributes.status;
+  let prevCancelAtPeriodEnd = previousAttributes.cancel_at_period_end;
+  let previousSubscription_id = subscription.id;
+  let previousSubscription_metadata = prevMetadata !== undefined ? prevMetadata : subscription.metadata;
+  let previousSubscription_status = prevStatus !== undefined ? prevStatus : subscription.status;
+  let previousSubscription_customer = subscription.customer;
+  let previousSubscription_cancel_at_period_end = prevCancelAtPeriodEnd !== undefined ? prevCancelAtPeriodEnd : subscription.cancel_at_period_end;
+  let previousSubscription_items = subscription.items;
+  let previousSubscription = {
+    id: previousSubscription_id,
+    metadata: previousSubscription_metadata,
+    status: previousSubscription_status,
+    customer: previousSubscription_customer,
+    cancel_at_period_end: previousSubscription_cancel_at_period_end,
+    items: previousSubscription_items
+  };
+  return {
+    subscription: verifiedSubscription,
+    previousSubscription: previousSubscription
+  };
+}
+
 let Billing = {
   Plan: Plan,
   getCurrentPeriodStart: getCurrentPeriodStart,
@@ -978,7 +1006,8 @@ let Billing = {
   retrieveSubscription: retrieveSubscription,
   preset: preset,
   createHostedCheckoutSession: createHostedCheckoutSession,
-  verify: verify
+  verify: verify,
+  verifyUpdate: verifyUpdate
 };
 
 function ref(fieldName, schema) {
