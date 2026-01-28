@@ -1713,6 +1713,58 @@ module Billing = {
       None
     }
   }
+
+  type subscriptionUpdate<'config> = {
+    subscription: subscription<'config>,
+    previousSubscription: subscription<'config>,
+  }
+
+  /** Verifies a subscription update event and returns both the current and previous subscription states.
+      The previous subscription is reconstructed by merging the current subscription with the previous attributes. */
+  let verifyUpdate = (
+    subscription: Subscription.t,
+    ~previousAttributes: Webhook.subscriptionPreviousAttributes,
+    ~config: t<'data, 'plan>,
+  ): option<subscriptionUpdate<t<'data, 'plan>>> => {
+    switch verify(subscription, ~config) {
+    | Some(verifiedSubscription) => {
+        // Reconstruct the previous subscription by applying previous attributes to current
+        let previousSubscription: Subscription.t = {
+          id: subscription.id,
+          customer: subscription.customer,
+          items: subscription.items,
+          metadata: switch previousAttributes.metadata {
+          | Some(prevMetadata) => {
+              // Merge current metadata with previous changed fields to reconstruct full previous state
+              // Note: null value means the field was added (didn't exist before)
+              let merged = Dict.copy(subscription.metadata)
+              prevMetadata->Dict.forEachWithKey((value, key) => {
+                switch (value->Obj.magic: Nullable.t<string>) {
+                | Null | Undefined => merged->Dict.delete(key)
+                | Value(v) => merged->Dict.set(key, v)
+                }
+              })
+              merged
+            }
+          | None => subscription.metadata
+          },
+          status: switch previousAttributes.status {
+          | Some(prevStatus) => prevStatus
+          | None => subscription.status
+          },
+          cancelAtPeriodEnd: switch previousAttributes.cancelAtPeriodEnd {
+          | Some(prevCancelAtPeriodEnd) => prevCancelAtPeriodEnd
+          | None => subscription.cancelAtPeriodEnd
+          },
+        }
+        Some({
+          subscription: verifiedSubscription,
+          previousSubscription: previousSubscription->Obj.magic,
+        })
+      }
+    | None => None
+    }
+  }
 }
 
 module Metadata = {
