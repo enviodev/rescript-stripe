@@ -5,7 +5,6 @@ import * as Stdlib_Array from "@rescript/runtime/lib/es6/Stdlib_Array.js";
 import * as Stdlib_JsExn from "@rescript/runtime/lib/es6/Stdlib_JsExn.js";
 import * as Stdlib_Option from "@rescript/runtime/lib/es6/Stdlib_Option.js";
 import * as Stdlib_JsError from "@rescript/runtime/lib/es6/Stdlib_JsError.js";
-import * as Primitive_object from "@rescript/runtime/lib/es6/Primitive_object.js";
 import * as Primitive_option from "@rescript/runtime/lib/es6/Primitive_option.js";
 import * as S$RescriptSchema from "rescript-schema/src/S.res.mjs";
 import * as Primitive_exceptions from "@rescript/runtime/lib/es6/Primitive_exceptions.js";
@@ -523,44 +522,6 @@ let Checkout = {
   Session: Session
 };
 
-function metadataChanged(event) {
-  return Stdlib_Option.isSome(event.data.previous_attributes.metadata);
-}
-
-function getPreviousMetadata(event) {
-  return event.data.previous_attributes.metadata;
-}
-
-function getMetadataChanges(event) {
-  let previousMetadata = event.data.previous_attributes.metadata;
-  if (previousMetadata === undefined) {
-    return [];
-  }
-  let currentMetadata = event.data.object.metadata;
-  let allKeys = new Set();
-  Object.keys(previousMetadata).forEach(k => {
-    allKeys.add(k);
-  });
-  Object.keys(currentMetadata).forEach(k => {
-    allKeys.add(k);
-  });
-  return Stdlib_Array.filterMap(allKeys.values().toArray(), key => {
-    let prev = previousMetadata[key];
-    let curr = currentMetadata[key];
-    if (Primitive_object.notequal(prev, curr)) {
-      return {
-        key: key,
-        previousValue: prev,
-        currentValue: curr
-      };
-    }
-  });
-}
-
-function getPreviousMetadataValue(event, key) {
-  return Stdlib_Option.flatMap(event.data.previous_attributes.metadata, meta => meta[key]);
-}
-
 function constructEvent(stripe, body, sig, secret) {
   try {
     let event = stripe.webhooks.constructEvent(body, sig, secret);
@@ -608,10 +569,6 @@ function constructEvent(stripe, body, sig, secret) {
 }
 
 let Webhook = {
-  metadataChanged: metadataChanged,
-  getPreviousMetadata: getPreviousMetadata,
-  getMetadataChanges: getMetadataChanges,
-  getPreviousMetadataValue: getPreviousMetadataValue,
   constructEvent: constructEvent
 };
 
