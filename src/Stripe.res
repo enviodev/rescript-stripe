@@ -1739,10 +1739,9 @@ module Billing = {
               // Note: null value means the field was added (didn't exist before)
               let merged = Dict.copy(subscription.metadata)
               prevMetadata->Dict.forEachWithKey((value, key) => {
-                if Nullable.isNullable(value->Obj.magic) {
-                  merged->Dict.delete(key)
-                } else {
-                  merged->Dict.set(key, value)
+                switch (value->Obj.magic: Nullable.t<string>) {
+                | Null | Undefined => merged->Dict.delete(key)
+                | Value(v) => merged->Dict.set(key, v)
                 }
               })
               merged

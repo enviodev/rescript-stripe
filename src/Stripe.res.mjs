@@ -978,10 +978,8 @@ function verifyUpdate(subscription, previousAttributes, config) {
     Stdlib_Dict.forEachWithKey(prevMetadata, (value, key) => {
       if (value == null) {
         return Stdlib_Dict.$$delete(merged, key);
-      } else {
-        merged[key] = value;
-        return;
       }
+      merged[key] = value;
     });
     tmp = merged;
   } else {
