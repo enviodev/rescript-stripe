@@ -976,7 +976,12 @@ function verifyUpdate(subscription, previousAttributes, config) {
   if (prevMetadata !== undefined) {
     let merged = Object.assign({}, subscription.metadata);
     Stdlib_Dict.forEachWithKey(prevMetadata, (value, key) => {
-      merged[key] = value;
+      if (value == null) {
+        return Stdlib_Dict.$$delete(merged, key);
+      } else {
+        merged[key] = value;
+        return;
+      }
     });
     tmp = merged;
   } else {

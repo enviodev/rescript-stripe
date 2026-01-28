@@ -1736,9 +1736,14 @@ module Billing = {
           metadata: switch previousAttributes.metadata {
           | Some(prevMetadata) => {
               // Merge current metadata with previous changed fields to reconstruct full previous state
+              // Note: null value means the field was added (didn't exist before)
               let merged = Dict.copy(subscription.metadata)
               prevMetadata->Dict.forEachWithKey((value, key) => {
-                merged->Dict.set(key, value)
+                if Nullable.isNullable(value->Obj.magic) {
+                  merged->Dict.delete(key)
+                } else {
+                  merged->Dict.set(key, value)
+                }
               })
               merged
             }
