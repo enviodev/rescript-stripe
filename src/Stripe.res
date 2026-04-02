@@ -330,7 +330,9 @@ module Price = {
     @as("tax_behavior")
     taxBehavior?: taxBehavior,
     @as("unit_amount")
-    unitAmountInCents: int,
+    unitAmountInCents?: int,
+    @as("unit_amount_decimal")
+    unitAmountDecimal?: string,
     @as("billing_scheme")
     billingScheme?: unknown,
     @as("currency_options")
@@ -455,6 +457,7 @@ module ProductCatalog = {
     ref: string,
     currency: currency,
     unitAmountInCents: int,
+    unitAmountDecimal?: string,
     recurring?: recurringConfig,
     lookupKey?: bool,
   }
@@ -644,6 +647,7 @@ module ProductCatalog = {
         currency: priceConfig.currency,
         product: product.id,
         unitAmountInCents: priceConfig.unitAmountInCents,
+        unitAmountDecimal: ?priceConfig.unitAmountDecimal,
         lookupKey: ?switch (transferLookupKey, priceConfig.lookupKey) {
         | (true, Some(true)) => Some(priceConfig.ref)
         | _ => None
@@ -893,6 +897,28 @@ module Subscription = {
   }
   @scope("subscriptions") @send
   external list: (stripe, listParams) => promise<page<t>> = "list"
+
+  type itemUpdateParam = {
+    id?: string,
+    price?: string,
+    deleted?: bool,
+  }
+
+  type updateParams = {
+    @as("cancel_at_period_end")
+    mutable cancelAtPeriodEnd?: bool,
+    mutable metadata?: dict<string>,
+    @as("items")
+    mutable itemUpdates?: array<itemUpdateParam>,
+  }
+  @scope("subscriptions") @send
+  external update: (stripe, string, updateParams) => promise<t> = "update"
+
+  @scope("subscriptions") @send
+  external retrieve: (stripe, string) => promise<t> = "retrieve"
+
+  @scope("subscriptions") @send
+  external cancel: (stripe, string) => promise<t> = "cancel"
 
   let isTerminatedStatus = status => {
     switch status {
