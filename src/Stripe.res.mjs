@@ -515,6 +515,8 @@ let CustomerPortal = {
 
 let InvoiceItem = {};
 
+let Charge = {};
+
 let Invoice = {};
 
 let Session = {};
@@ -1052,6 +1054,7 @@ export {
   Subscription,
   CustomerPortal,
   InvoiceItem,
+  Charge,
   Invoice,
   Checkout,
   Webhook,
