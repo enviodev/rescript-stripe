@@ -998,6 +998,17 @@ module InvoiceItem = {
   external list: (stripe, listParams) => promise<page<t>> = "list"
 }
 
+module Charge = {
+  type t = {id: string}
+
+  type updateParams = {
+    @as("receipt_email") receiptEmail?: string,
+  }
+
+  @scope("charges") @send
+  external update: (stripe, string, updateParams) => promise<t> = "update"
+}
+
 module Invoice = {
   type t = private {id: string}
 
@@ -1016,6 +1027,25 @@ module Invoice = {
 
   @scope("invoices") @send
   external finalizeInvoice: (stripe, string) => promise<t> = "finalizeInvoice"
+
+  type expandedPaymentIntent = {
+    @as("latest_charge") latestCharge: null<string>,
+  }
+  type paymentDetails = {
+    @as("payment_intent") paymentIntent?: expandedPaymentIntent,
+  }
+  type invoicePayment = {
+    payment: paymentDetails,
+  }
+  type paidInvoice = {
+    id: string,
+    payments?: page<invoicePayment>,
+  }
+  type payParams = {
+    expand?: array<string>,
+  }
+  @scope("invoices") @send
+  external pay: (stripe, string, payParams) => promise<paidInvoice> = "pay"
 }
 
 module Checkout = {
