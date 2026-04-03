@@ -1035,6 +1035,13 @@ module Charge = {
   external update: (stripe, string, updateParams) => promise<t> = "update"
 }
 
+module PaymentMethod = {
+  type t = {id: string}
+  type listParams = {customer: string}
+  @scope("paymentMethods") @send
+  external list: (stripe, listParams) => promise<page<t>> = "list"
+}
+
 module Invoice = {
   type t = private {id: string}
 
@@ -1047,6 +1054,8 @@ module Invoice = {
     @as("pending_invoice_items_behavior")
     pendingInvoiceItemsBehavior?: pendingInvoiceItemsBehavior,
     description?: string,
+    @as("default_payment_method")
+    defaultPaymentMethod?: string,
   }
   @scope("invoices") @send
   external create: (stripe, createParams) => promise<t> = "create"
@@ -1069,6 +1078,8 @@ module Invoice = {
   }
   type payParams = {
     expand?: array<string>,
+    @as("payment_method")
+    paymentMethod?: string,
   }
   @scope("invoices") @send
   external pay: (stripe, string, payParams) => promise<paidInvoice> = "pay"
