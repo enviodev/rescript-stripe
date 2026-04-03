@@ -327,6 +327,7 @@ async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, in
       nickname: match$1[3],
       recurring: match$1[1],
       unit_amount: priceConfig.unitAmountInCents,
+      unit_amount_decimal: priceConfig.unitAmountDecimal,
       lookup_key: transferLookupKey && match$2 !== undefined && match$2 ? priceConfig.ref : undefined,
       transfer_lookup_key: transferLookupKey
     });
@@ -516,6 +517,8 @@ let CustomerPortal = {
 let InvoiceItem = {};
 
 let Charge = {};
+
+let PaymentMethod = {};
 
 let Invoice = {};
 
@@ -1055,6 +1058,7 @@ export {
   CustomerPortal,
   InvoiceItem,
   Charge,
+  PaymentMethod,
   Invoice,
   Checkout,
   Webhook,
