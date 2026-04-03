@@ -1037,7 +1037,7 @@ module Charge = {
 
 module PaymentMethod = {
   type t = {id: string}
-  type listParams = {customer: string}
+  type listParams = {customer: string, limit?: int}
   @scope("paymentMethods") @send
   external list: (stripe, listParams) => promise<page<t>> = "list"
 }
