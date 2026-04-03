@@ -1083,6 +1083,9 @@ module Invoice = {
   }
   @scope("invoices") @send
   external pay: (stripe, string, payParams) => promise<paidInvoice> = "pay"
+
+  @scope("invoices") @send
+  external sendInvoice: (stripe, string) => promise<t> = "sendInvoice"
 }
 
 module Checkout = {
