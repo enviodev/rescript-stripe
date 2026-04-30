@@ -1025,11 +1025,17 @@ module InvoiceItem = {
 }
 
 module Charge = {
-  type t = {id: string}
+  type t = {
+    id: string,
+    @as("receipt_email") receiptEmail: null<string>,
+  }
 
   type updateParams = {
     @as("receipt_email") receiptEmail?: string,
   }
+
+  @scope("charges") @send
+  external retrieve: (stripe, string) => promise<t> = "retrieve"
 
   @scope("charges") @send
   external update: (stripe, string, updateParams) => promise<t> = "update"
@@ -1086,6 +1092,41 @@ module Invoice = {
 
   @scope("invoices") @send
   external sendInvoice: (stripe, string) => promise<t> = "sendInvoice"
+
+  /** Shape Stripe sends in invoice.* webhook events. Distinct from Invoice.t,
+      which is the create/pay return shape. Fields here are the ones the
+      consumer code reads directly off the webhook payload — no expand needed. */
+  type webhookLine = {
+    metadata: dict<string>,
+  }
+  type webhookLines = {
+    data: array<webhookLine>,
+  }
+  type webhookObject = {
+    id: string,
+    customer: null<string>,
+    @as("customer_email") customerEmail: null<string>,
+    @as("amount_due") amountDue: int,
+    @as("amount_paid") amountPaid: int,
+    @as("attempt_count") attemptCount: int,
+    @as("next_payment_attempt") nextPaymentAttempt: null<int>,
+    @as("hosted_invoice_url") hostedInvoiceUrl: null<string>,
+    /** Present on older API versions; null on newer ones — fall back to
+        retrieving the PaymentIntent and reading latest_charge. */
+    charge: null<string>,
+    @as("payment_intent") paymentIntent: null<string>,
+    lines: webhookLines,
+    metadata: dict<string>,
+  }
+}
+
+module PaymentIntent = {
+  type t = {
+    id: string,
+    @as("latest_charge") latestCharge: null<string>,
+  }
+  @scope("paymentIntents") @send
+  external retrieve: (stripe, string) => promise<t> = "retrieve"
 }
 
 module Checkout = {
@@ -1201,6 +1242,9 @@ module Webhook = {
     | CustomerSubscriptionCreated(genericEvent<data<Subscription.t>>)
     | CustomerSubscriptionUpdated(genericEvent<updateData<Subscription.t, subscriptionPreviousAttributes>>)
     | CustomerSubscriptionDeleted(genericEvent<data<Subscription.t>>)
+    | InvoicePaid(genericEvent<data<Invoice.webhookObject>>)
+    | InvoicePaymentFailed(genericEvent<data<Invoice.webhookObject>>)
+    | InvoicePaymentActionRequired(genericEvent<data<Invoice.webhookObject>>)
     | Unknown(genericEvent<data<dict<unknown>>>)
 
   @scope("webhooks") @send
@@ -1217,6 +1261,9 @@ module Webhook = {
       | "customer.subscription.created" => CustomerSubscriptionCreated(event->Obj.magic)
       | "customer.subscription.updated" => CustomerSubscriptionUpdated(event->Obj.magic)
       | "customer.subscription.deleted" => CustomerSubscriptionDeleted(event->Obj.magic)
+      | "invoice.paid" => InvoicePaid(event->Obj.magic)
+      | "invoice.payment_failed" => InvoicePaymentFailed(event->Obj.magic)
+      | "invoice.payment_action_required" => InvoicePaymentActionRequired(event->Obj.magic)
       | _ => Unknown(event)
       }->Ok
     } catch {
