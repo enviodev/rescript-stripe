@@ -1093,11 +1093,10 @@ module Invoice = {
   @scope("invoices") @send
   external sendInvoice: (stripe, string) => promise<t> = "sendInvoice"
 
-  /** Shape Stripe sends in invoice.* webhook events. Distinct from Invoice.t,
-      which is the create/pay return shape. Bound against API version
-      2025-11-17.clover (Stripe Node SDK 20.x): top-level `charge` and
-      `payment_intent` are gone — charge resolution goes through
-      `payments.data[].payment`. */
+  /** Shape Stripe sends in invoice.* webhook events. Distinct from
+      Invoice.t (the create/pay return shape). Charge resolution goes
+      through `payments.data[].payment` — see Stripe API reference for
+      InvoicePayment. */
   type webhookPayment = {
     /** "charge" | "payment_intent" | "payment_record" */
     @as("type") type_: string,
