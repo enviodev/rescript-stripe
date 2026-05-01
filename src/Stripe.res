@@ -1025,20 +1025,22 @@ module InvoiceItem = {
 }
 
 module Charge = {
-  type t = {
-    id: string,
-    @as("receipt_email") receiptEmail: null<string>,
-  }
+  type t = {id: string}
 
   type updateParams = {
     @as("receipt_email") receiptEmail?: string,
   }
 
-  @scope("charges") @send
-  external retrieve: (stripe, string) => promise<t> = "retrieve"
+  /** Stripe per-request options. Pass `idempotencyKey` to make a write
+      safe to retry — Stripe replays the original response (and side
+      effects, e.g. the receipt email) at most once for the same key
+      within a 24h window. */
+  type updateOptions = {
+    @as("idempotencyKey") idempotencyKey?: string,
+  }
 
   @scope("charges") @send
-  external update: (stripe, string, updateParams) => promise<t> = "update"
+  external update: (stripe, string, updateParams, updateOptions) => promise<t> = "update"
 }
 
 module PaymentMethod = {
