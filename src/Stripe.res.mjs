@@ -522,6 +522,8 @@ let PaymentMethod = {};
 
 let Invoice = {};
 
+let PaymentIntent = {};
+
 let Session = {};
 
 let Checkout = {
@@ -549,6 +551,24 @@ function constructEvent(stripe, body, sig, secret) {
       case "customer.subscription.updated" :
         tmp = {
           TAG: "CustomerSubscriptionUpdated",
+          _0: event
+        };
+        break;
+      case "invoice.paid" :
+        tmp = {
+          TAG: "InvoicePaid",
+          _0: event
+        };
+        break;
+      case "invoice.payment_action_required" :
+        tmp = {
+          TAG: "InvoicePaymentActionRequired",
+          _0: event
+        };
+        break;
+      case "invoice.payment_failed" :
+        tmp = {
+          TAG: "InvoicePaymentFailed",
           _0: event
         };
         break;
@@ -1060,6 +1080,7 @@ export {
   Charge,
   PaymentMethod,
   Invoice,
+  PaymentIntent,
   Checkout,
   Webhook,
   Billing,
