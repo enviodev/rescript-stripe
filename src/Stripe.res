@@ -1094,8 +1094,24 @@ module Invoice = {
   external sendInvoice: (stripe, string) => promise<t> = "sendInvoice"
 
   /** Shape Stripe sends in invoice.* webhook events. Distinct from Invoice.t,
-      which is the create/pay return shape. Fields here are the ones the
-      consumer code reads directly off the webhook payload — no expand needed. */
+      which is the create/pay return shape. Bound against API version
+      2025-11-17.clover (Stripe Node SDK 20.x): top-level `charge` and
+      `payment_intent` are gone — charge resolution goes through
+      `payments.data[].payment`. */
+  type webhookPayment = {
+    /** "charge" | "payment_intent" | "payment_record" */
+    @as("type") type_: string,
+    /** Set when type_ == "charge". String id (not expanded by webhooks). */
+    charge?: string,
+    /** Set when type_ == "payment_intent". String id. */
+    @as("payment_intent") paymentIntent?: string,
+  }
+  type webhookInvoicePayment = {
+    /** "open" | "paid" | "canceled" */
+    status: string,
+    payment: webhookPayment,
+    @as("is_default") isDefault: bool,
+  }
   type webhookLine = {
     metadata: dict<string>,
   }
@@ -1111,10 +1127,9 @@ module Invoice = {
     @as("attempt_count") attemptCount: int,
     @as("next_payment_attempt") nextPaymentAttempt: null<int>,
     @as("hosted_invoice_url") hostedInvoiceUrl: null<string>,
-    /** Present on older API versions; null on newer ones — fall back to
-        retrieving the PaymentIntent and reading latest_charge. */
-    charge: null<string>,
-    @as("payment_intent") paymentIntent: null<string>,
+    /** "charge_automatically" | "send_invoice" */
+    @as("collection_method") collectionMethod: string,
+    payments: page<webhookInvoicePayment>,
     lines: webhookLines,
     metadata: dict<string>,
   }
