@@ -524,6 +524,8 @@ let Invoice = {};
 
 let PaymentIntent = {};
 
+let PromotionCode = {};
+
 let Session = {};
 
 let Checkout = {
@@ -1082,6 +1084,7 @@ export {
   PaymentMethod,
   Invoice,
   PaymentIntent,
+  PromotionCode,
   Checkout,
   Webhook,
   Billing,

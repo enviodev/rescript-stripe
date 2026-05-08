@@ -1143,6 +1143,29 @@ module PaymentIntent = {
   external retrieve: (stripe, string) => promise<t> = "retrieve"
 }
 
+module PromotionCode = {
+  type t = {
+    id: string,
+    code: string,
+    active: bool,
+    coupon: dict<unknown>,
+  }
+
+  type listParams = {
+    code?: string,
+    active?: bool,
+    limit?: int,
+  }
+
+  type listResponse = {
+    data: array<t>,
+    @as("has_more") hasMore: bool,
+  }
+
+  @scope("promotionCodes") @send
+  external list: (stripe, listParams) => promise<listResponse> = "list"
+}
+
 module Checkout = {
   module Session = {
     type t = {
