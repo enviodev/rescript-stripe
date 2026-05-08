@@ -524,6 +524,8 @@ let Invoice = {};
 
 let PaymentIntent = {};
 
+let PromotionCode = {};
+
 let Session = {};
 
 let Checkout = {
@@ -953,6 +955,7 @@ async function createHostedCheckoutSession(stripe, params) {
       billing_cycle_anchor: params.billingCycleAnchor
     },
     allow_promotion_codes: params.allowPromotionCodes,
+    discounts: params.discounts,
     customer: customer.id,
     line_items: productItems.map(param => {
       let price = param.price;
@@ -1081,6 +1084,7 @@ export {
   PaymentMethod,
   Invoice,
   PaymentIntent,
+  PromotionCode,
   Checkout,
   Webhook,
   Billing,

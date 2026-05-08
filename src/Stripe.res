@@ -1143,6 +1143,29 @@ module PaymentIntent = {
   external retrieve: (stripe, string) => promise<t> = "retrieve"
 }
 
+module PromotionCode = {
+  type t = {
+    id: string,
+    code: string,
+    active: bool,
+    coupon: dict<unknown>,
+  }
+
+  type listParams = {
+    code?: string,
+    active?: bool,
+    limit?: int,
+  }
+
+  type listResponse = {
+    data: array<t>,
+    @as("has_more") hasMore: bool,
+  }
+
+  @scope("promotionCodes") @send
+  external list: (stripe, listParams) => promise<listResponse> = "list"
+}
+
 module Checkout = {
   module Session = {
     type t = {
@@ -1192,6 +1215,17 @@ module Checkout = {
       shipping?: [#auto | #never],
     }
 
+    /**
+     * The coupons or promotion codes to apply to this Session.
+     * Provide either `coupon` or `promotionCode` per entry, not both.
+     * Cannot be combined with `allowPromotionCodes`.
+     */
+    type discountParam = {
+      coupon?: string,
+      @as("promotion_code")
+      promotionCode?: string,
+    }
+
     type createParams = {
       @as("automatic_tax")
       automaticTax?: automaticTaxParams,
@@ -1208,6 +1242,7 @@ module Checkout = {
       subscriptionData?: subscriptionDataParams,
       @as("allow_promotion_codes")
       allowPromotionCodes?: bool,
+      discounts?: array<discountParam>,
       customer?: string,
       @as("line_items")
       lineItems?: array<lineItemParam>,
@@ -1660,6 +1695,13 @@ module Billing = {
     description?: string,
     billPastUsage?: pastUsage,
     allowPromotionCodes?: bool,
+    /**
+     * Pre-applied coupons or promotion codes for the Stripe Checkout
+     * session. Each entry should set either `coupon` or `promotionCode`.
+     * Mutually exclusive with `allowPromotionCodes` — Stripe rejects the
+     * request if both are supplied.
+     */
+    discounts?: array<Checkout.Session.discountParam>,
   }
 
   let createHostedCheckoutSession = async (stripe, params) => {
@@ -1811,6 +1853,7 @@ module Billing = {
         ->Dict.fromArray,
       },
       allowPromotionCodes: ?params.allowPromotionCodes,
+      discounts: ?params.discounts,
       successUrl: params.successUrl,
       cancelUrl: ?params.cancelUrl,
       lineItems: productItems->Array.map(({price}): Checkout.Session.lineItemParam => {

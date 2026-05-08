@@ -164,6 +164,22 @@ await stripe->Stripe.Billing.createHostedCheckoutSession({
 })
 ```
 
+To pre-apply a coupon or promotion code at checkout (e.g. an adoption
+discount you've already issued the customer), use `discounts` instead of
+`allowPromotionCodes` — they're mutually exclusive on the Stripe side:
+
+```rescript
+await stripe->Stripe.Billing.createHostedCheckoutSession({
+  config: CourseSubscription.config,
+  data: {...},
+  plan: Starter,
+  interval: Month,
+  discounts: [{coupon: "ADOPTION20"}],
+  // or: discounts: [{promotionCode: "promo_1Abc..."}],
+  successUrl: `https://x.com/dzakh_dev`,
+})
+```
+
 ### Retrieve customer
 
 ```rescript
