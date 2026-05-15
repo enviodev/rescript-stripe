@@ -460,7 +460,13 @@ let Customer = {
 };
 
 function isTerminatedStatus(status) {
-  return false;
+  switch (status) {
+    case "canceled" :
+    case "incomplete_expired" :
+      return true;
+    default:
+      return false;
+  }
 }
 
 function getMeterId(subscription, meterRef) {
@@ -747,7 +753,12 @@ async function internalRetrieveSubscription(stripe, data, config, customerId, us
     }
     if (data.primaryFields.every(name => subscription.metadata[name] === data.dict[name])) {
       console.log(`Found an existing subscription. Subscription ID: ` + subscription.id);
-      return true;
+      if (isTerminatedStatus(subscription.status)) {
+        console.log(`The subscription "` + subscription.id + `" is terminated with status ` + subscription.status + `. Skipping...`);
+        return false;
+      } else {
+        return true;
+      }
     } else {
       return false;
     }
