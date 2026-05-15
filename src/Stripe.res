@@ -922,13 +922,13 @@ module Subscription = {
 
   let isTerminatedStatus = status => {
     switch status {
+    | Canceled
+    | IncompleteExpired => true
     | Incomplete
     | Trialing
     | Active
     | PastDue
-    | Canceled
     | Unpaid
-    | IncompleteExpired
     | Paused => false
     }
   }
