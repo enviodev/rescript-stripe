@@ -11,7 +11,7 @@ import * as S$RescriptSchema from "rescript-schema/src/S.res.mjs";
 import * as Primitive_exceptions from "@rescript/runtime/lib/es6/Primitive_exceptions.js";
 
 function make(prim) {
-  return new Stripe(prim, {"telemetry": false});
+  return new Stripe(prim, {"telemetry": false, "apiVersion": "2025-11-17.clover"});
 }
 
 function makeFindByMetadata(name, list, retrieve) {
@@ -738,6 +738,41 @@ function processData(data, config) {
   };
 }
 
+function processPlan(plan, config) {
+  let planMetadataFields = [planField];
+  let planSchema = S$RescriptSchema.union(config.plans.map(param => {
+    let planConfig = param[1];
+    let planRef = param[0];
+    return S$RescriptSchema.object(s => {
+      let matchesCounter = {
+        contents: -1
+      };
+      s.tag(planField, planRef);
+      return planConfig({
+        field: param => {
+          let fieldName = param.fieldName;
+          planMetadataFields.push(fieldName);
+          return s.f(fieldName, param.coereced);
+        },
+        tag: (param, value) => {
+          let fieldName = param.fieldName;
+          planMetadataFields.push(fieldName);
+          s.f(fieldName, S$RescriptSchema.literal(S$RescriptSchema.reverseConvertOrThrow(value, param.coereced)));
+        },
+        matches: schema => {
+          matchesCounter.contents = matchesCounter.contents + 1 | 0;
+          return s.f(`#matches` + matchesCounter.contents.toString(), schema);
+        }
+      });
+    });
+  }));
+  let rawPlan = S$RescriptSchema.reverseConvertOrThrow(plan, planSchema);
+  return [
+    rawPlan,
+    planMetadataFields
+  ];
+}
+
 async function internalRetrieveSubscription(stripe, data, config, customerId, usedMetersAcc) {
   console.log(`Searching for an existing "` + config.ref + `" subscription for customer "` + customerId + `"...`);
   let subscriptions = await listSubscriptions(stripe, config, customerId);
@@ -854,42 +889,16 @@ async function preset(stripe, preset$1) {
 
 async function createHostedCheckoutSession(stripe, params) {
   let data = processData(params.data, params.config);
-  let planMetadataFields = [planField];
-  let planSchema = S$RescriptSchema.union(params.config.plans.map(param => {
-    let planConfig = param[1];
-    let planRef = param[0];
-    return S$RescriptSchema.object(s => {
-      let matchesCounter = {
-        contents: -1
-      };
-      s.tag(planField, planRef);
-      return planConfig({
-        field: param => {
-          let fieldName = param.fieldName;
-          planMetadataFields.push(fieldName);
-          return s.f(fieldName, param.coereced);
-        },
-        tag: (param, value) => {
-          let fieldName = param.fieldName;
-          planMetadataFields.push(fieldName);
-          s.f(fieldName, S$RescriptSchema.literal(S$RescriptSchema.reverseConvertOrThrow(value, param.coereced)));
-        },
-        matches: schema => {
-          matchesCounter.contents = matchesCounter.contents + 1 | 0;
-          return s.f(`#matches` + matchesCounter.contents.toString(), schema);
-        }
-      });
-    });
-  }));
-  let rawPlan = S$RescriptSchema.reverseConvertOrThrow(params.plan, planSchema);
+  let match = processPlan(params.plan, params.config);
+  let rawPlan = match[0];
   let now = new Date();
   let planId = rawPlan[planField];
   let products = params.config.products(params.plan, params.data);
   let products$1;
   if (products.length !== 0) {
-    let match = params.billPastUsage;
-    if (match !== undefined) {
-      let startedAt = match.startedAt;
+    let match$1 = params.billPastUsage;
+    if (match$1 !== undefined) {
+      let startedAt = match$1.startedAt;
       products$1 = Stdlib_Array.filterMap(products, p => {
         let priceConfig = getPriceConfig(p, params.interval);
         let match = priceConfig.recurring;
@@ -940,7 +949,7 @@ async function createHostedCheckoutSession(stripe, params) {
     products: products$1
   }, usedCustomerMeters, params.interval);
   console.log(`Creating a new checkout session for subscription "` + params.config.ref + `" plan "` + planId + `"...`);
-  let match$1 = params.config.termsOfServiceConsent;
+  let match$2 = params.config.termsOfServiceConsent;
   let session = await stripe.checkout.sessions.create({
     automatic_tax: params.automaticTax,
     customer_update: {
@@ -951,7 +960,7 @@ async function createHostedCheckoutSession(stripe, params) {
     mode: "subscription",
     success_url: params.successUrl,
     cancel_url: params.cancelUrl,
-    consent_collection: match$1 !== undefined && match$1 ? ({
+    consent_collection: match$2 !== undefined && match$2 ? ({
         terms_of_service: "required"
       }) : undefined,
     subscription_data: {
@@ -959,7 +968,7 @@ async function createHostedCheckoutSession(stripe, params) {
       metadata: Object.fromEntries(data.metadataFields.map(name => [
         name,
         data.dict[name]
-      ]).concat(planMetadataFields.map(name => [
+      ]).concat(match[1].map(name => [
         name,
         rawPlan[name]
       ]))),
@@ -1045,6 +1054,98 @@ function verifyUpdate(subscription, previousAttributes, config) {
   };
 }
 
+async function upgradeSubscription(stripe, params) {
+  let plan = params.plan;
+  let data = params.data;
+  let subscription = params.subscription;
+  let config = params.config;
+  let match = processPlan(plan, config);
+  let planMetadataFields = match[1];
+  let rawPlan = match[0];
+  let newPlanId = rawPlan[planField];
+  let isPlanDifferent = planMetadataFields.some(name => subscription.metadata[name] !== rawPlan[name]);
+  if (isPlanDifferent) {
+    let currentPlanId = Stdlib_Option.getOr(subscription.metadata[planField], "<unknown>");
+    console.log(`Upgrading subscription "` + subscription.id + `" from plan "` + currentPlanId + `" to "` + newPlanId + `"...`);
+    let processedData = processData(data, config);
+    let products = config.products(plan, data);
+    let products$1 = products.length !== 0 ? products : Stdlib_JsError.throwWithMessage(`Plan "` + newPlanId + `" doesn't have any products configured`);
+    let usedCustomerMeters = new Set();
+    let otherSubscriptions = await listSubscriptions(stripe, config, subscription.customer);
+    otherSubscriptions.forEach(s => {
+      if (s.id !== subscription.id && !isTerminatedStatus(s.status)) {
+        s.items.data.forEach(item => {
+          let meterEventName = item.price.metadata["#meter_event_name"];
+          if (meterEventName !== undefined) {
+            usedCustomerMeters.add(meterEventName);
+            return;
+          }
+        });
+        return;
+      }
+    });
+    let productItems = await sync(stripe, {
+      products: products$1
+    }, usedCustomerMeters, params.interval);
+    let itemUpdates = subscription.items.data.map(item => ({
+      id: item.id,
+      deleted: true
+    }));
+    productItems.forEach(param => {
+      let price = param.price;
+      let match = price.recurring;
+      let id = price.id;
+      let item;
+      if (match === null) {
+        item = {
+          price: id,
+          quantity: 1
+        };
+      } else {
+        let tmp = match.meter;
+        item = tmp === null ? ({
+            price: id,
+            quantity: 1
+          }) : ({
+            price: id
+          });
+      }
+      itemUpdates.push(item);
+    });
+    let newMetadata = Object.fromEntries(processedData.metadataFields.map(name => [
+      name,
+      processedData.dict[name]
+    ]).concat(planMetadataFields.map(name => [
+      name,
+      rawPlan[name]
+    ])));
+    Object.keys(subscription.metadata).forEach(key => {
+      if (Stdlib_Option.isNone(newMetadata[key])) {
+        newMetadata[key] = "";
+        return;
+      }
+    });
+    let updated = await stripe.subscriptions.update(subscription.id, {
+      metadata: newMetadata,
+      items: itemUpdates,
+      proration_behavior: params.prorationBehavior,
+      payment_behavior: params.paymentBehavior,
+      billing_cycle_anchor: params.billingCycleAnchor,
+      proration_date: params.prorationDate
+    });
+    console.log(`Successfully upgraded subscription "` + updated.id + `" to plan "` + newPlanId + `"`);
+    return {
+      TAG: "Upgraded",
+      _0: updated
+    };
+  }
+  console.log(`Subscription "` + subscription.id + `" is already on plan "` + newPlanId + `". Skipping upgrade.`);
+  return {
+    TAG: "AlreadyOnPlan",
+    _0: subscription
+  };
+}
+
 let Billing = {
   Plan: Plan,
   getCurrentPeriodStart: getCurrentPeriodStart,
@@ -1059,7 +1160,8 @@ let Billing = {
   preset: preset,
   createHostedCheckoutSession: createHostedCheckoutSession,
   verify: verify,
-  verifyUpdate: verifyUpdate
+  verifyUpdate: verifyUpdate,
+  upgradeSubscription: upgradeSubscription
 };
 
 function ref(fieldName, schema) {

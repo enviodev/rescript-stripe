@@ -1,7 +1,12 @@
 type stripe
 
+/** Pinned to match the Stripe Node SDK bundled with this package (v20.x → `2025-11-17.clover`).
+    Bumping this requires reviewing every binding below for API drift. */
 @module("stripe") @new
-external make: (string, @as(json`{"telemetry": false}`) _) => stripe = "default"
+external make: (
+  string,
+  @as(json`{"telemetry": false, "apiVersion": "2025-11-17.clover"}`) _,
+) => stripe = "default"
 // Prevent "stripe" import in the user's code
 let make = make
 
@@ -902,7 +907,21 @@ module Subscription = {
     id?: string,
     price?: string,
     deleted?: bool,
+    quantity?: int,
   }
+
+  type prorationBehavior =
+    | @as("always_invoice") AlwaysInvoice
+    | @as("create_prorations") CreateProrations
+    | @as("none") NoProrations
+
+  type paymentBehavior =
+    | @as("allow_incomplete") AllowIncomplete
+    | @as("default_incomplete") DefaultIncomplete
+    | @as("error_if_incomplete") ErrorIfIncomplete
+    | @as("pending_if_incomplete") PendingIfIncomplete
+
+  type billingCycleAnchor = | @as("now") Now | @as("unchanged") Unchanged
 
   type updateParams = {
     @as("cancel_at_period_end")
@@ -910,6 +929,14 @@ module Subscription = {
     mutable metadata?: dict<string>,
     @as("items")
     mutable itemUpdates?: array<itemUpdateParam>,
+    @as("proration_behavior")
+    mutable prorationBehavior?: prorationBehavior,
+    @as("payment_behavior")
+    mutable paymentBehavior?: paymentBehavior,
+    @as("billing_cycle_anchor")
+    mutable billingCycleAnchor?: billingCycleAnchor,
+    @as("proration_date")
+    mutable prorationDate?: int,
   }
   @scope("subscriptions") @send
   external update: (stripe, string, updateParams) => promise<t> = "update"
@@ -1531,6 +1558,35 @@ module Billing = {
       }
     }
 
+    let processPlan = (plan, ~config) => {
+      let planMetadataFields = [planField]
+      let planSchema = S.union(
+        config.plans->Array.map(((planRef, planConfig)) => {
+          S.object(s => {
+            let matchesCounter = ref(-1)
+            s.tag(planField, planRef)
+            let p = planConfig({
+              field: ({fieldName, coereced}) => {
+                planMetadataFields->Array.push(fieldName)->ignore
+                s.field(fieldName, coereced)
+              },
+              tag: ({fieldName, coereced}, value) => {
+                planMetadataFields->Array.push(fieldName)->ignore
+                let _ = s.field(fieldName, S.literal(value->S.reverseConvertOrThrow(coereced)))
+              },
+              matches: schema => {
+                matchesCounter := matchesCounter.contents + 1
+                s.field(`#matches${matchesCounter.contents->Int.toString}`, schema)
+              },
+            })
+            p
+          })
+        }),
+      )
+      let rawPlan: dict<string> = plan->S.reverseConvertOrThrow(planSchema)->Obj.magic
+      (rawPlan, planMetadataFields)
+    }
+
     let internalRetrieveSubscription = async (
       stripe,
       data,
@@ -1707,35 +1763,7 @@ module Billing = {
   let createHostedCheckoutSession = async (stripe, params) => {
     let data = processData(params.data, ~config=params.config)
 
-    let planMetadataFields = [planField]
-
-    let planSchema = S.union(
-      params.config.plans->Array.map(((planRef, planConfig)) => {
-        S.object(s => {
-          let matchesCounter = ref(-1)
-          s.tag(planField, planRef)
-          let plan = planConfig({
-            // TODO: Validate that all plans have the same metadata fields if they aren't marked as optional
-            field: ({fieldName, coereced}) => {
-              planMetadataFields->Array.push(fieldName)->ignore
-              s.field(fieldName, coereced)
-            },
-            tag: ({fieldName, coereced}, value) => {
-              planMetadataFields->Array.push(fieldName)->ignore
-              let _ = s.field(fieldName, S.literal(value->S.reverseConvertOrThrow(coereced)))
-            },
-            // We don't need the data in schema,
-            // only for typesystem
-            matches: schema => {
-              matchesCounter := matchesCounter.contents + 1
-              s.field(`#matches${matchesCounter.contents->Int.toString}`, schema)
-            },
-          })
-          plan
-        })
-      }),
-    )
-    let rawPlan: dict<string> = params.plan->S.reverseConvertOrThrow(planSchema)->Obj.magic
+    let (rawPlan, planMetadataFields) = processPlan(params.plan, ~config=params.config)
 
     let now = Date.make()
 
@@ -1937,6 +1965,133 @@ module Billing = {
         })
       }
     | None => None
+    }
+  }
+
+  type upgradeSubscriptionParams<'data, 'plan> = {
+    config: t<'data, 'plan>,
+    subscription: subscription<t<'data, 'plan>>,
+    data: 'data,
+    plan: 'plan,
+    interval?: Price.interval,
+    /** How to handle prorations when items change. Defaults to Stripe's `create_prorations`. */
+    prorationBehavior?: Subscription.prorationBehavior,
+    /** Behavior on the invoice that proration may produce. Use with `prorationBehavior=AlwaysInvoice`
+        to charge for the upgrade immediately. */
+    paymentBehavior?: Subscription.paymentBehavior,
+    /** Reset the billing cycle to `now` to charge the new plan from today,
+        or keep it `unchanged` to keep the existing renewal date. */
+    billingCycleAnchor?: Subscription.billingCycleAnchor,
+    /** Override the proration calculation point (Unix timestamp). */
+    prorationDate?: int,
+  }
+
+  type upgradeSubscriptionResult<'data, 'plan> =
+    | /** New plan matches the current plan — no update was sent to Stripe. */
+    AlreadyOnPlan(subscription<t<'data, 'plan>>)
+    | Upgraded(subscription<t<'data, 'plan>>)
+
+  let upgradeSubscription = async (
+    stripe,
+    params: upgradeSubscriptionParams<'data, 'plan>,
+  ): upgradeSubscriptionResult<'data, 'plan> => {
+    let {config, subscription, data, plan} = params
+    let currentSubscription = subscription->(Obj.magic: subscription<t<'data, 'plan>> => Subscription.t)
+
+    let (rawPlan, planMetadataFields) = processPlan(plan, ~config)
+    let newPlanId = rawPlan->Dict.getUnsafe(planField)
+
+    let isPlanDifferent = planMetadataFields->Array.some(name => {
+      currentSubscription.metadata->Dict.get(name) !== Some(rawPlan->Dict.getUnsafe(name))
+    })
+
+    if !isPlanDifferent {
+      Console.log(
+        `Subscription "${currentSubscription.id}" is already on plan "${newPlanId}". Skipping upgrade.`,
+      )
+      AlreadyOnPlan(subscription)
+    } else {
+      let currentPlanId =
+        currentSubscription.metadata->Dict.get(planField)->Option.getOr("<unknown>")
+      Console.log(
+        `Upgrading subscription "${currentSubscription.id}" from plan "${currentPlanId}" to "${newPlanId}"...`,
+      )
+
+      let processedData = processData(data, ~config)
+
+      let products = switch config.products(~data, ~plan) {
+      | [] => JsError.throwWithMessage(`Plan "${newPlanId}" doesn't have any products configured`)
+      | products => products
+      }
+
+      // Reserve meter event names already used by the customer's other subscriptions of the
+      // same config, so ProductCatalog.sync picks free meter prices for this subscription.
+      let usedCustomerMeters = Set.make()
+      let otherSubscriptions =
+        await stripe->listSubscriptions(~config, ~customerId=currentSubscription.customer)
+      otherSubscriptions->Array.forEach(s => {
+        if s.id !== currentSubscription.id && !(s.status->Subscription.isTerminatedStatus) {
+          s.items.data->Array.forEach(item => {
+            switch item.price.metadata->Dict.get("#meter_event_name") {
+            | None => ()
+            | Some(meterEventName) => usedCustomerMeters->Set.add(meterEventName)->ignore
+            }
+          })
+        }
+      })
+
+      let productItems = await stripe->ProductCatalog.sync(
+        {ProductCatalog.products: products},
+        ~usedCustomerMeters,
+        ~interval=?params.interval,
+      )
+
+      // Delete every existing item, then add items for the new plan.
+      let itemUpdates: array<Subscription.itemUpdateParam> =
+        currentSubscription.items.data->Array.map(item => {
+          Subscription.id: item.id,
+          deleted: true,
+        })
+      productItems->Array.forEach(({price}) => {
+        let item: Subscription.itemUpdateParam = switch price {
+        | {recurring: Value({meter: Value(_)}), id} => {price: id}
+        | {id} => {price: id, quantity: 1}
+        }
+        itemUpdates->Array.push(item)->ignore
+      })
+
+      // Rebuild metadata fresh; clear any stale keys from the previous plan by setting them
+      // to empty string (Stripe's convention for "unset this key").
+      let newMetadata =
+        processedData["metadataFields"]
+        ->Array.map(name => (name, processedData["dict"]->Dict.getUnsafe(name)))
+        ->Array.concat(
+          planMetadataFields->Array.map(name => (name, rawPlan->Dict.getUnsafe(name))),
+        )
+        ->Dict.fromArray
+      currentSubscription.metadata
+      ->Dict.keysToArray
+      ->Array.forEach(key => {
+        if newMetadata->Dict.get(key)->Option.isNone {
+          newMetadata->Dict.set(key, "")
+        }
+      })
+
+      let updated = await stripe->Subscription.update(
+        currentSubscription.id,
+        {
+          metadata: newMetadata,
+          itemUpdates,
+          prorationBehavior: ?params.prorationBehavior,
+          paymentBehavior: ?params.paymentBehavior,
+          billingCycleAnchor: ?params.billingCycleAnchor,
+          prorationDate: ?params.prorationDate,
+        },
+      )
+      Console.log(
+        `Successfully upgraded subscription "${updated.id}" to plan "${newPlanId}"`,
+      )
+      Upgraded(updated->Obj.magic)
     }
   }
 }

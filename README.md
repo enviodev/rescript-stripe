@@ -236,6 +236,58 @@ subscription->Stripe.Billing.verify(CourseSubscription.config)->Option.map(subsc
 })
 ```
 
+### Upgrade subscription plan
+
+Swap an existing subscription's plan in-place. Old plan product items are
+removed, new plan items are added, and the subscription metadata is
+updated to reflect the new plan. Same-plan calls short-circuit (no API
+write) and return `AlreadyOnPlan`.
+
+```rescript
+let {subscription} = await stripe->Stripe.Billing.retrieveSubscriptionWithCustomer({
+  userId: "dzakh",
+  courseId: "rescript-schema-to-the-moon",
+  courseName: "ReScript Schema to the Moon",
+}, ~config=CourseSubscription.config)
+
+switch subscription {
+| Some(subscription) =>
+  let result = await stripe->Stripe.Billing.upgradeSubscription({
+    config: CourseSubscription.config,
+    subscription,
+    data: {
+      userId: "dzakh",
+      courseId: "rescript-schema-to-the-moon",
+      courseName: "ReScript Schema to the Moon",
+    },
+    plan: Pro({withExtraSeats: true}),
+    interval: Month,
+    // Bill the prorated difference immediately and attempt to collect.
+    prorationBehavior: AlwaysInvoice,
+    paymentBehavior: DefaultIncomplete,
+    billingCycleAnchor: Unchanged,
+  })
+  switch result {
+  | AlreadyOnPlan(_) => Console.log("Customer is already on this plan")
+  | Upgraded(_) => Console.log("Plan upgraded")
+  }
+| None => ()
+}
+```
+
+Options:
+
+- `prorationBehavior` — `AlwaysInvoice` (charge the difference now),
+  `CreateProrations` (default; stage prorations for the next renewal),
+  or `NoProrations`.
+- `paymentBehavior` — controls how the proration invoice is collected.
+  Use `DefaultIncomplete` when you need the client to confirm a
+  PaymentIntent (e.g. SCA); `AllowIncomplete` is Stripe's default.
+- `billingCycleAnchor` — `Now` resets the cycle and bills from today;
+  `Unchanged` keeps the original renewal date.
+- `prorationDate` — override the proration calculation point (Unix
+  timestamp) to match a preview from Stripe's invoice preview endpoint.
+
 ### Get meter event name by reference
 
 ```rescript
