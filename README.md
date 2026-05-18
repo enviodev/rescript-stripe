@@ -25,10 +25,11 @@ module CourseSubscription = {
   }
   type plan =
     | Starter
-    | Pro
+    | Pro({withExtraSeats: bool})
 
   let userId = Stripe.Metadata.ref("user_id", S.string)
   let courseId = Stripe.Metadata.ref("course_id", S.string)
+  let withExtraSeats = Stripe.Metadata.ref("with_extra_seats", S.bool)
 
   let config = {
     Stripe.Billing.ref: "course",
@@ -39,8 +40,21 @@ module CourseSubscription = {
     },
     termsOfServiceConsent: true,
     plans: [
-      ("starter", _ => Starter),
-      ("pro", _ => Pro),
+      (
+        "starter",
+        s => {
+          s.tag(withExtraSeats, false)
+          Starter
+        },
+      ),
+      (
+        "pro",
+        s => {
+          Pro({
+            withExtraSeats: s.field(withExtraSeats),
+          })
+        },
+      ),
     ],
     products: (~plan, ~data) => {
       switch plan {
@@ -66,7 +80,7 @@ module CourseSubscription = {
             ],
           },
         ]
-      | Pro => [
+      | Pro(_) => [
           {
             Stripe.ProductCatalog.name: data.courseName,
             ref: `pro_course_${data.courseId}`,
@@ -209,7 +223,7 @@ switch subscription {
       courseId: "rescript-schema-to-the-moon",
       courseName: "ReScript Schema to the Moon",
     },
-    plan: Pro,
+    plan: Pro({withExtraSeats: true}),
     interval: Month,
     // Bill the prorated difference immediately and attempt to collect.
     prorationBehavior: AlwaysInvoice,
