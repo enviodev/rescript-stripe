@@ -1054,7 +1054,7 @@ function verifyUpdate(subscription, previousAttributes, config) {
   };
 }
 
-async function upgradeSubscription(stripe, params) {
+async function updateSubscriptionPlan(stripe, params) {
   let plan = params.plan;
   let data = params.data;
   let subscription = params.subscription;
@@ -1073,7 +1073,7 @@ async function upgradeSubscription(stripe, params) {
   });
   if (isPlanDifferent) {
     let currentPlanId = Stdlib_Option.getOr(subscription.metadata[planField], "<unknown>");
-    console.log(`Upgrading subscription "` + subscription.id + `" from plan "` + currentPlanId + `" to "` + newPlanId + `"...`);
+    console.log(`Updating subscription "` + subscription.id + `" plan from "` + currentPlanId + `" to "` + newPlanId + `"...`);
     if (subscription.items.has_more) {
       Stdlib_JsError.throwWithMessage(`Subscription "` + subscription.id + `" has more items than fit in a single page. Pagination on subscription items is not supported yet`);
     }
@@ -1143,13 +1143,13 @@ async function upgradeSubscription(stripe, params) {
       billing_cycle_anchor: params.billingCycleAnchor,
       proration_date: params.prorationDate
     });
-    console.log(`Successfully upgraded subscription "` + updated.id + `" to plan "` + newPlanId + `"`);
+    console.log(`Successfully updated subscription "` + updated.id + `" to plan "` + newPlanId + `"`);
     return {
-      TAG: "Upgraded",
+      TAG: "Updated",
       _0: updated
     };
   }
-  console.log(`Subscription "` + subscription.id + `" is already on plan "` + newPlanId + `". Skipping upgrade.`);
+  console.log(`Subscription "` + subscription.id + `" is already on plan "` + newPlanId + `". Skipping update.`);
   return {
     TAG: "AlreadyOnPlan",
     _0: subscription
@@ -1171,7 +1171,7 @@ let Billing = {
   createHostedCheckoutSession: createHostedCheckoutSession,
   verify: verify,
   verifyUpdate: verifyUpdate,
-  upgradeSubscription: upgradeSubscription
+  updateSubscriptionPlan: updateSubscriptionPlan
 };
 
 function ref(fieldName, schema) {

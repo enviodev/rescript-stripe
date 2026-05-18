@@ -1968,7 +1968,7 @@ module Billing = {
     }
   }
 
-  type upgradeSubscriptionParams<'data, 'plan> = {
+  type updateSubscriptionPlanParams<'data, 'plan> = {
     config: t<'data, 'plan>,
     subscription: subscription<t<'data, 'plan>>,
     data: 'data,
@@ -1977,7 +1977,7 @@ module Billing = {
     /** How to handle prorations when items change. Defaults to Stripe's `create_prorations`. */
     prorationBehavior?: Subscription.prorationBehavior,
     /** Behavior on the invoice that proration may produce. Use with `prorationBehavior=AlwaysInvoice`
-        to charge for the upgrade immediately. */
+        to charge for the plan change immediately. */
     paymentBehavior?: Subscription.paymentBehavior,
     /** Reset the billing cycle to `now` to charge the new plan from today,
         or keep it `unchanged` to keep the existing renewal date. */
@@ -1986,15 +1986,15 @@ module Billing = {
     prorationDate?: int,
   }
 
-  type upgradeSubscriptionResult<'data, 'plan> =
+  type updateSubscriptionPlanResult<'data, 'plan> =
     | /** New plan matches the current plan — no update was sent to Stripe. */
     AlreadyOnPlan(subscription<t<'data, 'plan>>)
-    | Upgraded(subscription<t<'data, 'plan>>)
+    | Updated(subscription<t<'data, 'plan>>)
 
-  let upgradeSubscription = async (
+  let updateSubscriptionPlan = async (
     stripe,
-    params: upgradeSubscriptionParams<'data, 'plan>,
-  ): upgradeSubscriptionResult<'data, 'plan> => {
+    params: updateSubscriptionPlanParams<'data, 'plan>,
+  ): updateSubscriptionPlanResult<'data, 'plan> => {
     let {config, subscription, data, plan} = params
     let currentSubscription = subscription->(Obj.magic: subscription<t<'data, 'plan>> => Subscription.t)
 
@@ -2010,14 +2010,14 @@ module Billing = {
 
     if !isPlanDifferent {
       Console.log(
-        `Subscription "${currentSubscription.id}" is already on plan "${newPlanId}". Skipping upgrade.`,
+        `Subscription "${currentSubscription.id}" is already on plan "${newPlanId}". Skipping update.`,
       )
       AlreadyOnPlan(subscription)
     } else {
       let currentPlanId =
         currentSubscription.metadata->Dict.get(planField)->Option.getOr("<unknown>")
       Console.log(
-        `Upgrading subscription "${currentSubscription.id}" from plan "${currentPlanId}" to "${newPlanId}"...`,
+        `Updating subscription "${currentSubscription.id}" plan from "${currentPlanId}" to "${newPlanId}"...`,
       )
 
       if currentSubscription.items.hasMore {
@@ -2099,9 +2099,9 @@ module Billing = {
         },
       )
       Console.log(
-        `Successfully upgraded subscription "${updated.id}" to plan "${newPlanId}"`,
+        `Successfully updated subscription "${updated.id}" to plan "${newPlanId}"`,
       )
-      Upgraded(updated->Obj.magic)
+      Updated(updated->Obj.magic)
     }
   }
 }

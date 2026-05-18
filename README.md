@@ -236,7 +236,7 @@ subscription->Stripe.Billing.verify(CourseSubscription.config)->Option.map(subsc
 })
 ```
 
-### Upgrade subscription plan
+### Update subscription plan
 
 Swap an existing subscription's plan in-place. Old plan product items are
 removed, new plan items are added, and the subscription metadata is
@@ -252,7 +252,7 @@ let {subscription} = await stripe->Stripe.Billing.retrieveSubscriptionWithCustom
 
 switch subscription {
 | Some(subscription) =>
-  let result = await stripe->Stripe.Billing.upgradeSubscription({
+  let result = await stripe->Stripe.Billing.updateSubscriptionPlan({
     config: CourseSubscription.config,
     subscription,
     data: {
@@ -269,7 +269,7 @@ switch subscription {
   })
   switch result {
   | AlreadyOnPlan(_) => Console.log("Customer is already on this plan")
-  | Upgraded(_) => Console.log("Plan upgraded")
+  | Updated(_) => Console.log("Plan updated")
   }
 | None => ()
 }
