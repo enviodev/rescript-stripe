@@ -68,19 +68,19 @@ module CourseSubscription = {
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 10_00,
-                recurring: {interval: Month},
+                recurring: Licensed({interval: Month}),
               },
               {
                 ref: `starter_course_${data.courseId}_yearly`,
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 100_00,
-                recurring: {interval: Year},
+                recurring: Licensed({interval: Year}),
               },
             ],
           },
         ]
-      | Pro(_) => [
+      | Pro({withExtraSeats}) => [
           {
             Stripe.ProductCatalog.name: data.courseName,
             ref: `pro_course_${data.courseId}`,
@@ -90,18 +90,36 @@ module CourseSubscription = {
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 50_00,
-                recurring: {interval: Month},
+                recurring: Licensed({interval: Month}),
               },
               {
                 ref: `pro_course_${data.courseId}_yearly`,
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 500_00,
-                recurring: {interval: Year},
+                recurring: Licensed({interval: Year}),
               },
             ],
           },
-        ]
+        ]->Array.concat(
+          withExtraSeats
+            ? [
+                {
+                  Stripe.ProductCatalog.name: data.courseName ++ " Additional Seats",
+                  ref: `pro_course_${data.courseId}_extra_seat`,
+                  unitLabel: "user",
+                  prices: [
+                    {
+                      ref: `pro_course_${data.courseId}_extra_seat`,
+                      currency: USD,
+                      unitAmountInCents: 10_00,
+                      recurring: Metered({interval: Month, ref: `extra_seat`}),
+                    },
+                  ],
+                },
+              ]
+            : [],
+        )
       }
     },
   }
