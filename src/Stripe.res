@@ -216,73 +216,6 @@ type currency = | @as("usd") USD | ISO(string)
 type taxBehavior =
   | @as("exclusive") Exclusive | @as("inclusive") Inclusive | @as("unspecified") Unspecified
 
-module Meter = {
-  type status = | @as("active") Active | @as("inactive") Inactive
-
-  type t = {
-    id: string,
-    object: string,
-    created: int,
-    // customer_mapping
-    @as("display_name")
-    displayName: string,
-    @as("event_name")
-    eventName: string,
-    // event_time_window
-    // livemode
-    // status
-    // status_transitions
-    // updated
-    // value_settings
-  }
-
-  type aggregationFormula = | @as("sum") Sum | @as("count") Count
-
-  type defaultAggregation = {formula: aggregationFormula}
-
-  type createParams = {
-    @as("default_aggregation")
-    defaultAggregation: defaultAggregation,
-    @as("display_name")
-    displayName: string,
-    @as("event_name")
-    eventName: string,
-    @as("customer_mapping")
-    customerMapping?: unknown,
-    @as("event_time_window")
-    eventTimeWindow?: unknown,
-    @as("value_settings")
-    valueSettings?: unknown,
-  }
-
-  @scope(("billing", "meters")) @send
-  external create: (stripe, createParams) => promise<t> = "create"
-
-  type listParams = {
-    status?: status,
-    limit?: int,
-    @as("starting_after")
-    startingAfter?: string,
-    @as("ending_before")
-    endingBefore?: string,
-  }
-  @scope(("billing", "meters")) @send
-  external list: (stripe, listParams) => promise<page<t>> = "list"
-}
-
-module MeterEvent = {
-  type t
-  type createParams = {
-    @as("event_name")
-    eventName: string,
-    payload: dict<string>,
-    identifier?: string,
-    timestamp?: int,
-  }
-  @scope(("billing", "meterEvents")) @send
-  external create: (stripe, createParams) => promise<t> = "create"
-}
-
 module Price = {
   type interval =
     | @as("day") Day
@@ -290,13 +223,9 @@ module Price = {
     | @as("month") Month
     | @as("year") Year
 
-  type usageType = | @as("metered") Metered | @as("licensed") Licensed
-
   type recurring = {
     interval: interval,
-    meter: null<string>,
     @as("interval_count") intervalCount: int,
-    @as("usage_type") usageType: usageType,
     @as("trial_period_days") trialPeriodDays: null<unknown>,
   }
 
@@ -319,10 +248,6 @@ module Price = {
     interval: interval,
     @as("interval_count")
     intervalCount?: int,
-    @as("meter")
-    meter?: string,
-    @as("usage_type")
-    usageType?: usageType,
   }
 
   type createParams = {
@@ -454,9 +379,7 @@ module Product = {
 }
 
 module ProductCatalog = {
-  type recurringConfig =
-    | Metered({interval: Price.interval, ref: string})
-    | Licensed({interval: Price.interval})
+  type recurringConfig = {interval: Price.interval}
 
   type priceConfig = {
     ref: string,
@@ -490,8 +413,7 @@ module ProductCatalog = {
       switch (
         productConfig.prices->Array.filter(priceConfig => {
           switch (interval, priceConfig.recurring) {
-          | (Some(expectedInterval), Some(Metered({interval}) | Licensed({interval}))) =>
-            interval === expectedInterval
+          | (Some(expectedInterval), Some({interval})) => interval === expectedInterval
           | (Some(_), None) => false
           | (None, _) => true
           }
@@ -520,8 +442,6 @@ module ProductCatalog = {
   let syncProduct = async (
     stripe: stripe,
     productConfig: productConfig,
-    ~meters: option<dict<Meter.t>>=?,
-    ~usedCustomerMeters=?,
     ~interval: option<Price.interval>=?,
   ) => {
     Console.log(`Searching for active product "${productConfig.ref}"...`)
@@ -589,63 +509,9 @@ module ProductCatalog = {
     }
 
     let createPriceFromConfig = async priceConfig => {
-      let (metadata, recurring, transferLookupKey, nickname) = switch priceConfig.recurring {
-      | None => (None, None, false, None)
-      | Some(Licensed({interval})) => (None, Some({Price.interval: interval}), true, None)
-      | Some(Metered({interval, ref})) => {
-          let meters = switch meters {
-          | Some(m) => m
-          | None =>
-            JsError.throwWithMessage(`The "meters" argument is required when product catalog contains a Metered price`)
-          }
-          let usedCustomerMeters = switch usedCustomerMeters {
-          | Some(m) => m
-          | None =>
-            JsError.throwWithMessage(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`)
-          }
-          let rec getEventName = (~meterRef, ~counter=0) => {
-            let eventName = switch counter {
-            | 0 => meterRef
-            | _ => `${meterRef}_${(counter + 1)->Int.toString}`
-            }
-            if usedCustomerMeters->Set.has(eventName) {
-              getEventName(~meterRef, ~counter=counter + 1)
-            } else {
-              eventName
-            }
-          }
-          let eventName = getEventName(~meterRef=ref)
-          let meter = switch meters->Dict.get(eventName) {
-          | Some(meter) => meter
-          | None =>
-            Console.log(`Meter "${eventName}" does not exist. Creating...`)
-            let meter = await stripe->Meter.create({
-              displayName: ref,
-              eventName,
-              defaultAggregation: {
-                formula: Sum,
-              },
-            })
-            Console.log(`Meter "${eventName}" successfully created. Meter ID: ${meter.id}`)
-            meter
-          }
-
-          (
-            Some(
-              dict{
-                "#meter_ref": ref,
-                "#meter_event_name": eventName,
-              },
-            ),
-            Some({
-              interval,
-              usageType: Metered,
-              meter: meter.id,
-            }),
-            ref === eventName,
-            ref === eventName ? None : Some(`Copy with meter "${eventName}"`),
-          )
-        }
+      let recurring = switch priceConfig.recurring {
+      | None => None
+      | Some({interval}) => Some({Price.interval: interval})
       }
 
       await stripe->Price.create({
@@ -653,14 +519,12 @@ module ProductCatalog = {
         product: product.id,
         unitAmountInCents: priceConfig.unitAmountInCents,
         unitAmountDecimal: ?priceConfig.unitAmountDecimal,
-        lookupKey: ?switch (transferLookupKey, priceConfig.lookupKey) {
-        | (true, Some(true)) => Some(priceConfig.ref)
+        lookupKey: ?switch priceConfig.lookupKey {
+        | Some(true) => Some(priceConfig.ref)
         | _ => None
         },
-        ?nickname,
-        ?metadata,
         ?recurring,
-        transferLookupKey,
+        transferLookupKey: true,
       })
     }
 
@@ -670,51 +534,18 @@ module ProductCatalog = {
       let existingPrice = prices.data->Array.find(price => {
         let isPriceInSync =
           priceConfig.currency === price.currency &&
-          if (
-            // Don't check the lookup key for meter price copies
-            price.metadata->Dict.getUnsafe("#meter_ref") ===
-              price.metadata->Dict.getUnsafe("#meter_event_name")
-          ) {
-            switch (priceConfig.lookupKey, price.lookupKey) {
-            | (Some(true), Value(lookupKey)) => priceConfig.ref === lookupKey
-            | (Some(true), Null)
-            | (_, Value(_)) => false
-            | (_, Null) => true
-            }
-          } else {
-            true
-          } &&
+          (switch (priceConfig.lookupKey, price.lookupKey) {
+          | (Some(true), Value(lookupKey)) => priceConfig.ref === lookupKey
+          | (Some(true), Null)
+          | (_, Value(_)) => false
+          | (_, Null) => true
+          }) &&
           Null.Value(priceConfig.unitAmountInCents) === price.unitAmountInCents &&
           switch (price.recurring, priceConfig.recurring) {
           | (Null, None) => true
           | (Null, Some(_))
           | (Value(_), None) => false
-          | (Value(priceRecurring), Some(Licensed({interval}))) =>
-            priceRecurring.usageType === Licensed &&
-            priceRecurring.interval === interval &&
-            priceRecurring.meter === Null
-          | (Value(priceRecurring), Some(Metered({interval, ref}))) =>
-            let usedCustomerMeters = switch usedCustomerMeters {
-            | Some(m) => m
-            | None =>
-              JsError.throwWithMessage(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`)
-            }
-
-            priceRecurring.usageType === Metered &&
-            priceRecurring.interval === interval &&
-            priceRecurring.meter->Null.toOption->Option.isSome &&
-            price.metadata->Dict.getUnsafe("#meter_ref") === ref &&
-            switch price.metadata->Dict.get("#meter_event_name") {
-            | None => false
-            | Some(meterEventName) => {
-                // We need to use a price with another meter in this case
-                // To be able to count the creating subscription separately
-                let hasAnotherSubscriptionWithTheSameMeter =
-                  usedCustomerMeters->Set.has(meterEventName)
-
-                !hasAnotherSubscriptionWithTheSameMeter
-              }
-            }
+          | (Value(priceRecurring), Some({interval})) => priceRecurring.interval === interval
           }
         isPriceInSync
       })
@@ -744,31 +575,11 @@ module ProductCatalog = {
     }
   }
 
-  let sync = async (stripe: stripe, productCatalog: t, ~usedCustomerMeters=?, ~interval=?) => {
-    let isMeterNeeded = productCatalog.products->Array.some(p =>
-      p.prices->Array.some(p =>
-        switch p.recurring {
-        | Some(Metered(_)) => true
-        | _ => false
-        }
-      )
-    )
-
-    let meters = if isMeterNeeded {
-      Console.log(`Loading active meters...`)
-      let {data: meters} = await stripe->Meter.list({
-        status: Active,
-        limit: 100,
-      })
-      Console.log(`Loaded ${meters->Array.length->Int.toString} active meters`)
-      Some(meters->Array.map(meter => (meter.eventName, meter))->Dict.fromArray)
-    } else {
-      None
-    }
-
-    let products = await productCatalog.products
-    ->Array.map(p => stripe->syncProduct(p, ~meters?, ~usedCustomerMeters?, ~interval?))
-    ->Promise.all
+  let sync = async (stripe: stripe, productCatalog: t, ~interval=?) => {
+    let products =
+      await productCatalog.products
+      ->Array.map(p => stripe->syncProduct(p, ~interval?))
+      ->Promise.all
     Console.log(`Successfully finished syncing products`)
     products
   }
@@ -960,46 +771,6 @@ module Subscription = {
     }
   }
 
-  let getMeterId = (subscription, ~meterRef) => {
-    subscription.items.data
-    ->Array.find(item => {
-      item.price.metadata->Dict.getUnsafe("#meter_ref") === meterRef
-    })
-    ->Option.flatMap(i => i.price.recurring->Null.toOption)
-    ->Option.flatMap(r => r.meter->Null.toOption)
-  }
-
-  let getMeterEventName = (subscription, ~meterRef) => {
-    subscription.items.data
-    ->Array.find(item => {
-      item.price.metadata->Dict.getUnsafe("#meter_ref") === meterRef
-    })
-    ->Option.flatMap(i => i.price.metadata->Dict.get("#meter_event_name"))
-  }
-
-  let reportMeterUsage = async (
-    stripe,
-    subscription,
-    ~meterRef,
-    ~value,
-    ~timestamp=?,
-    ~identifier=?,
-  ) => {
-    switch getMeterEventName(subscription, ~meterRef) {
-    | Some(meterEventName) =>
-      let _ = await stripe->MeterEvent.create({
-        eventName: meterEventName,
-        payload: dict{
-          "value": value->Int.toString,
-          "stripe_customer_id": subscription.customer,
-        },
-        ?timestamp,
-        ?identifier,
-      })
-      Ok()
-    | None => Error(#MeterNotFound)
-    }
-  }
 }
 
 module CustomerPortal = {
@@ -1587,29 +1358,12 @@ module Billing = {
       (rawPlan, planMetadataFields)
     }
 
-    let internalRetrieveSubscription = async (
-      stripe,
-      data,
-      ~config,
-      ~customerId,
-      ~usedMetersAcc=?,
-    ) => {
+    let internalRetrieveSubscription = async (stripe, data, ~config, ~customerId) => {
       Console.log(
         `Searching for an existing "${config.ref}" subscription for customer "${customerId}"...`,
       )
       let subscriptions = await stripe->listSubscriptions(~config, ~customerId)
       let s = subscriptions->Array.find(subscription => {
-        // FIXME: This shouldn't be stopped by .find
-        switch usedMetersAcc {
-        | Some(usedMetersAcc) =>
-          subscription.items.data->Array.forEach(item => {
-            switch item.price.metadata->Dict.get("#meter_event_name") {
-            | None => ()
-            | Some(meterEventName) => usedMetersAcc->Set.add(meterEventName)->ignore
-            }
-          })
-        | None => ()
-        }
         if (
           data["primaryFields"]->Array.every(name => {
             subscription.metadata->Dict.getUnsafe(name) === data["dict"]->Dict.getUnsafe(name)
@@ -1777,10 +1531,8 @@ module Billing = {
         ->Array.filterMap(p => {
           let priceConfig = ProductCatalog.getPriceConfig(p, ~interval=?params.interval)
           switch priceConfig.recurring {
-          | None
-          | Some(Metered(_)) =>
-            None
-          | Some(Licensed(_)) =>
+          | None => None
+          | Some(_) =>
             let pastUsageBill = calculatePastUsageBill(
               ~priceAmount=priceConfig.unitAmountInCents,
               ~startedAt,
@@ -1830,14 +1582,11 @@ module Billing = {
 
     let customer = await stripe->Customer.findOrCreateByMetadata(data["customerMetadata"])
 
-    let usedCustomerMeters = Set.make()
-
     switch await internalRetrieveSubscription(
       stripe,
       data,
       ~customerId=customer.id,
       ~config=params.config,
-      ~usedMetersAcc=usedCustomerMeters,
     ) {
     | None => Console.log(`Customer doesn't have an active "${params.config.ref}" subscription`)
     | Some(subscription) =>
@@ -1852,7 +1601,6 @@ module Billing = {
 
     let productItems = await stripe->ProductCatalog.sync(
       {ProductCatalog.products: products},
-      ~usedCustomerMeters,
       ~interval=?params.interval,
     )
 
@@ -1885,15 +1633,8 @@ module Billing = {
       successUrl: params.successUrl,
       cancelUrl: ?params.cancelUrl,
       lineItems: productItems->Array.map(({price}): Checkout.Session.lineItemParam => {
-        switch price {
-        | {recurring: Value({meter: Value(_)}), id} => {
-            price: id,
-          }
-        | {id} => {
-            price: id,
-            quantity: 1,
-          }
-        }
+        price: price.id,
+        quantity: 1,
       }),
     })
     Console.log(
@@ -2033,40 +1774,23 @@ module Billing = {
       | products => products
       }
 
-      // Reserve meter event names already used by the customer's other subscriptions of the
-      // same config, so ProductCatalog.sync picks free meter prices for this subscription.
-      let usedCustomerMeters = Set.make()
-      let otherSubscriptions =
-        await stripe->listSubscriptions(~config, ~customerId=currentSubscription.customer)
-      otherSubscriptions->Array.forEach(s => {
-        if s.id !== currentSubscription.id && !(s.status->Subscription.isTerminatedStatus) {
-          s.items.data->Array.forEach(item => {
-            switch item.price.metadata->Dict.get("#meter_event_name") {
-            | None => ()
-            | Some(meterEventName) => usedCustomerMeters->Set.add(meterEventName)->ignore
-            }
-          })
-        }
-      })
-
       let productItems = await stripe->ProductCatalog.sync(
         {ProductCatalog.products: products},
-        ~usedCustomerMeters,
         ~interval=?params.interval,
       )
 
       let itemUpdates: array<Subscription.itemUpdateParam> =
-        currentSubscription.items.data->Array.map(item => {
-          Subscription.id: item.id,
+        currentSubscription.items.data
+        ->Array.map((item): Subscription.itemUpdateParam => {
+          id: item.id,
           deleted: true,
         })
-      productItems->Array.forEach(({price}) => {
-        let item: Subscription.itemUpdateParam = switch price {
-        | {recurring: Value({meter: Value(_)}), id} => {price: id}
-        | {id} => {price: id, quantity: 1}
-        }
-        itemUpdates->Array.push(item)->ignore
-      })
+        ->Array.concat(
+          productItems->Array.map(({price}): Subscription.itemUpdateParam => {
+            price: price.id,
+            quantity: 1,
+          }),
+        )
 
       let newMetadata =
         processedData["metadataFields"]

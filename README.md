@@ -25,11 +25,10 @@ module CourseSubscription = {
   }
   type plan =
     | Starter
-    | Pro({withExtraSeats: bool})
+    | Pro
 
   let userId = Stripe.Metadata.ref("user_id", S.string)
   let courseId = Stripe.Metadata.ref("course_id", S.string)
-  let withExtraSeats = Stripe.Metadata.ref("with_extra_seats", S.bool)
 
   let config = {
     Stripe.Billing.ref: "course",
@@ -40,21 +39,8 @@ module CourseSubscription = {
     },
     termsOfServiceConsent: true,
     plans: [
-      (
-        "starter",
-        s => {
-          s.tag(withExtraSeats, false)
-          Starter
-        },
-      ),
-      (
-        "pro",
-        s => {
-          Pro({
-            withExtraSeats: s.field(withExtraSeats),
-          })
-        },
-      ),
+      ("starter", _ => Starter),
+      ("pro", _ => Pro),
     ],
     products: (~plan, ~data) => {
       switch plan {
@@ -68,23 +54,19 @@ module CourseSubscription = {
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 10_00,
-                recurring: Licensed({
-                  interval: Month,
-                }),
+                recurring: {interval: Month},
               },
               {
                 ref: `starter_course_${data.courseId}_yearly`,
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 100_00,
-                recurring: Licensed({
-                  interval: Year,
-                }),
+                recurring: {interval: Year},
               },
             ],
           },
         ]
-      | Pro({withExtraSeats}) => [
+      | Pro => [
           {
             Stripe.ProductCatalog.name: data.courseName,
             ref: `pro_course_${data.courseId}`,
@@ -94,51 +76,18 @@ module CourseSubscription = {
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 50_00,
-                recurring: Licensed({
-                  interval: Month,
-                }),
+                recurring: {interval: Month},
               },
               {
                 ref: `pro_course_${data.courseId}_yearly`,
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 500_00,
-                recurring: Licensed({
-                  interval: Year,
-                }),
+                recurring: {interval: Year},
               },
             ],
           },
-        ]->Array.concat(
-          withExtraSeats ? [
-            {
-              Stripe.ProductCatalog.name: data.courseName ++ " Additional Seats",
-              ref: `pro_course_${data.courseId}_extra_seat`,
-              unitLabel: "user",
-              prices: [
-                {
-                  ref: `pro_course_${data.courseId}_extra_seat`,
-                  lookupKey: true,
-                  currency: USD,
-                  unitAmountInCents: 10_00,
-                  recurring: Metered({
-                    interval: Month,
-                    ref: `extra_seat`,
-                  }),
-                },
-                {
-                  ref: `pro_course_${data.courseId}_extra_seat_yearly`,
-                  currency: USD,
-                  unitAmountInCents: 10_00,
-                  recurring: Metered({
-                    interval: Year,
-                    ref: `extra_seat`,
-                  }),
-                }
-              ]
-            }]
-          : []
-        )
+        ]
       }
     },
   }
@@ -260,7 +209,7 @@ switch subscription {
       courseId: "rescript-schema-to-the-moon",
       courseName: "ReScript Schema to the Moon",
     },
-    plan: Pro({withExtraSeats: true}),
+    plan: Pro,
     interval: Month,
     // Bill the prorated difference immediately and attempt to collect.
     prorationBehavior: AlwaysInvoice,
@@ -287,27 +236,6 @@ Options:
   `Unchanged` keeps the original renewal date.
 - `prorationDate` — override the proration calculation point (Unix
   timestamp) to match a preview from Stripe's invoice preview endpoint.
-
-### Get meter event name by reference
-
-```rescript
-let eventName = subscription->Stripe.Subscription.getMeterEventName(~meterRef="extra_seat")
-```
-
-ReScript Stripe might create multiple meters under the hood, so you need to call the function to get the right meter event name to report usage.
-
-This is done because you can report meter usage per customer, so if a customer has multiple subscriptions, you need to have different meters for each one. ReScript Stripe manages this for you.
-
-### Report usage for a subscription
-
-```rescript
-let _ =
-  await stripe->Stripe.Subscription.reportMeterUsage(
-    subscription,
-    ~meterRef="extra_seat",
-    ~value=1,
-  )
-```
 
 ### Customer portal helpers
 
@@ -380,4 +308,4 @@ Console.log(session.url)
 ```
 
 > 🧠 It'll throw if the subscription already exist
-> 🧠 Customer, products, prices, meters are automatically created when they are not found
+> 🧠 Customer, products, prices are automatically created when they are not found

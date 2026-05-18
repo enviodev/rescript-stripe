@@ -134,10 +134,6 @@ function makeFindByMetadata(name, list, retrieve) {
   };
 }
 
-let Meter = {};
-
-let MeterEvent = {};
-
 let Price = {};
 
 let findByMetadata = makeFindByMetadata("product", (stripe, params) => stripe.products.list({
@@ -189,7 +185,7 @@ function getPriceConfig(productConfig, interval) {
   }
 }
 
-async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, interval) {
+async function syncProduct(stripe, productConfig, interval) {
   console.log(`Searching for active product "` + productConfig.ref + `"...`);
   let p = await findByMetadata(stripe, {
     "#product_ref": productConfig.ref
@@ -252,105 +248,35 @@ async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, in
   }
   let createPriceFromConfig = async priceConfig => {
     let match = priceConfig.recurring;
-    let match$1;
-    if (match !== undefined) {
-      if (match.TAG === "Metered") {
-        let ref = match.ref;
-        let meters$1 = meters !== undefined ? meters : Stdlib_JsError.throwWithMessage(`The "meters" argument is required when product catalog contains a Metered price`);
-        let usedCustomerMeters$1 = usedCustomerMeters !== undefined ? usedCustomerMeters : Stdlib_JsError.throwWithMessage(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`);
-        let getEventName = (meterRef, _counterOpt) => {
-          while (true) {
-            let counterOpt = _counterOpt;
-            let counter = counterOpt !== undefined ? counterOpt : 0;
-            let eventName = counter !== 0 ? meterRef + `_` + (counter + 1 | 0).toString() : meterRef;
-            if (!usedCustomerMeters$1.has(eventName)) {
-              return eventName;
-            }
-            _counterOpt = counter + 1 | 0;
-            continue;
-          };
-        };
-        let eventName = getEventName(ref, undefined);
-        let meter = meters$1[eventName];
-        let meter$1;
-        if (meter !== undefined) {
-          meter$1 = meter;
-        } else {
-          console.log(`Meter "` + eventName + `" does not exist. Creating...`);
-          let meter$2 = await stripe.billing.meters.create({
-            default_aggregation: {
-              formula: "sum"
-            },
-            display_name: ref,
-            event_name: eventName
-          });
-          console.log(`Meter "` + eventName + `" successfully created. Meter ID: ` + meter$2.id);
-          meter$1 = meter$2;
-        }
-        match$1 = [
-          {
-            "#meter_ref": ref,
-            "#meter_event_name": eventName
-          },
-          {
-            interval: match.interval,
-            meter: meter$1.id,
-            usage_type: "metered"
-          },
-          ref === eventName,
-          ref === eventName ? undefined : `Copy with meter "` + eventName + `"`
-        ];
-      } else {
-        match$1 = [
-          undefined,
-          {
-            interval: match.interval
-          },
-          true,
-          undefined
-        ];
-      }
-    } else {
-      match$1 = [
-        undefined,
-        undefined,
-        false,
-        undefined
-      ];
-    }
-    let transferLookupKey = match$1[2];
-    let match$2 = priceConfig.lookupKey;
+    let recurring = match !== undefined ? ({
+        interval: match.interval
+      }) : undefined;
+    let match$1 = priceConfig.lookupKey;
     return await stripe.prices.create({
       currency: priceConfig.currency,
       product: product.id,
-      metadata: match$1[0],
-      nickname: match$1[3],
-      recurring: match$1[1],
+      recurring: recurring,
       unit_amount: priceConfig.unitAmountInCents,
       unit_amount_decimal: priceConfig.unitAmountDecimal,
-      lookup_key: transferLookupKey && match$2 !== undefined && match$2 ? priceConfig.ref : undefined,
-      transfer_lookup_key: transferLookupKey
+      lookup_key: match$1 !== undefined && match$1 ? priceConfig.ref : undefined,
+      transfer_lookup_key: true
     });
   };
   let priceConfig = getPriceConfig(productConfig, interval);
   let existingPrice = prices.data.find(price => {
     let tmp = false;
     if (priceConfig.currency === price.currency) {
+      let match = priceConfig.lookupKey;
+      let match$1 = price.lookup_key;
       let tmp$1;
-      if (price.metadata["#meter_ref"] === price.metadata["#meter_event_name"]) {
-        let match = priceConfig.lookupKey;
-        let match$1 = price.lookup_key;
-        let exit = 0;
-        if (match !== undefined && match) {
-          tmp$1 = match$1 === null ? false : priceConfig.ref === match$1;
-        } else {
-          exit = 1;
-        }
-        if (exit === 1) {
-          tmp$1 = match$1 === null;
-        }
+      let exit = 0;
+      if (match !== undefined && match) {
+        tmp$1 = match$1 === null ? false : priceConfig.ref === match$1;
       } else {
-        tmp$1 = true;
+        exit = 1;
+      }
+      if (exit === 1) {
+        tmp$1 = match$1 === null;
       }
       tmp = tmp$1;
     }
@@ -361,24 +287,8 @@ async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, in
     let match$3 = priceConfig.recurring;
     if (match$2 === null) {
       return match$3 === undefined;
-    }
-    if (match$3 === undefined) {
-      return false;
-    }
-    if (match$3.TAG !== "Metered") {
-      if (match$2.usage_type === "licensed" && match$2.interval === match$3.interval) {
-        return match$2.meter === null;
-      } else {
-        return false;
-      }
-    }
-    let usedCustomerMeters$1 = usedCustomerMeters !== undefined ? usedCustomerMeters : Stdlib_JsError.throwWithMessage(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`);
-    if (!(match$2.usage_type === "metered" && match$2.interval === match$3.interval && Stdlib_Option.isSome(Primitive_option.fromNull(match$2.meter)) && price.metadata["#meter_ref"] === match$3.ref)) {
-      return false;
-    }
-    let meterEventName = price.metadata["#meter_event_name"];
-    if (meterEventName !== undefined) {
-      return !usedCustomerMeters$1.has(meterEventName);
+    } else if (match$3 !== undefined) {
+      return match$2.interval === match$3.interval;
     } else {
       return false;
     }
@@ -399,32 +309,8 @@ async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, in
   };
 }
 
-async function sync(stripe, productCatalog, usedCustomerMeters, interval) {
-  let isMeterNeeded = productCatalog.products.some(p => p.prices.some(p => {
-    let match = p.recurring;
-    if (match !== undefined) {
-      return match.TAG === "Metered";
-    } else {
-      return false;
-    }
-  }));
-  let meters;
-  if (isMeterNeeded) {
-    console.log(`Loading active meters...`);
-    let match = await stripe.billing.meters.list({
-      status: "active",
-      limit: 100
-    });
-    let meters$1 = match.data;
-    console.log(`Loaded ` + meters$1.length.toString() + ` active meters`);
-    meters = Object.fromEntries(meters$1.map(meter => [
-      meter.event_name,
-      meter
-    ]));
-  } else {
-    meters = undefined;
-  }
-  let products = await Promise.all(productCatalog.products.map(p => syncProduct(stripe, p, meters, usedCustomerMeters, interval)));
+async function sync(stripe, productCatalog, interval) {
+  let products = await Promise.all(productCatalog.products.map(p => syncProduct(stripe, p, interval)));
   console.log(`Successfully finished syncing products`);
   return products;
 }
@@ -469,43 +355,8 @@ function isTerminatedStatus(status) {
   }
 }
 
-function getMeterId(subscription, meterRef) {
-  return Stdlib_Option.flatMap(Stdlib_Option.flatMap(subscription.items.data.find(item => item.price.metadata["#meter_ref"] === meterRef), i => Primitive_option.fromNull(i.price.recurring)), r => Primitive_option.fromNull(r.meter));
-}
-
-function getMeterEventName(subscription, meterRef) {
-  return Stdlib_Option.flatMap(subscription.items.data.find(item => item.price.metadata["#meter_ref"] === meterRef), i => i.price.metadata["#meter_event_name"]);
-}
-
-async function reportMeterUsage(stripe, subscription, meterRef, value, timestamp, identifier) {
-  let meterEventName = getMeterEventName(subscription, meterRef);
-  if (meterEventName !== undefined) {
-    await stripe.billing.meterEvents.create({
-      event_name: meterEventName,
-      payload: {
-        value: value.toString(),
-        stripe_customer_id: subscription.customer
-      },
-      identifier: identifier,
-      timestamp: timestamp
-    });
-    return {
-      TAG: "Ok",
-      _0: undefined
-    };
-  } else {
-    return {
-      TAG: "Error",
-      _0: "MeterNotFound"
-    };
-  }
-}
-
 let Subscription = {
-  isTerminatedStatus: isTerminatedStatus,
-  getMeterId: getMeterId,
-  getMeterEventName: getMeterEventName,
-  reportMeterUsage: reportMeterUsage
+  isTerminatedStatus: isTerminatedStatus
 };
 
 function prefillEmail(link, email) {
@@ -773,19 +624,10 @@ function processPlan(plan, config) {
   ];
 }
 
-async function internalRetrieveSubscription(stripe, data, config, customerId, usedMetersAcc) {
+async function internalRetrieveSubscription(stripe, data, config, customerId) {
   console.log(`Searching for an existing "` + config.ref + `" subscription for customer "` + customerId + `"...`);
   let subscriptions = await listSubscriptions(stripe, config, customerId);
   let s = subscriptions.find(subscription => {
-    if (usedMetersAcc !== undefined) {
-      subscription.items.data.forEach(item => {
-        let meterEventName = item.price.metadata["#meter_event_name"];
-        if (meterEventName !== undefined) {
-          usedMetersAcc.add(meterEventName);
-          return;
-        }
-      });
-    }
     if (data.primaryFields.every(name => subscription.metadata[name] === data.dict[name])) {
       console.log(`Found an existing subscription. Subscription ID: ` + subscription.id);
       if (isTerminatedStatus(subscription.status)) {
@@ -841,7 +683,7 @@ async function retrieveSubscriptionWithCustomer(stripe, config, data) {
   } else {
     preset$1 = undefined;
   }
-  let subscription = await internalRetrieveSubscription(stripe, processedData, config, customer.id, undefined);
+  let subscription = await internalRetrieveSubscription(stripe, processedData, config, customer.id);
   if (subscription !== undefined) {
     return {
       customer: customer,
@@ -905,9 +747,6 @@ async function createHostedCheckoutSession(stripe, params) {
         if (match === undefined) {
           return;
         }
-        if (match.TAG === "Metered") {
-          return;
-        }
         let pastUsageBill = calculatePastUsageBill(priceConfig.unitAmountInCents, startedAt, now, params.interval);
         if (pastUsageBill === 0) {
           return;
@@ -938,8 +777,7 @@ async function createHostedCheckoutSession(stripe, params) {
     products$1 = Stdlib_JsError.throwWithMessage(`Plan "` + planId + `" doesn't have any products configured`);
   }
   let customer = await findOrCreateByMetadata(stripe, data.customerMetadata);
-  let usedCustomerMeters = new Set();
-  let subscription = await internalRetrieveSubscription(stripe, data, params.config, customer.id, usedCustomerMeters);
+  let subscription = await internalRetrieveSubscription(stripe, data, params.config, customer.id);
   if (subscription !== undefined) {
     Stdlib_JsError.throwWithMessage(`There's already an active "` + params.config.ref + `" subscription for ` + data.primaryFields.map(name => name + `=` + data.dict[name]).join(", ") + ` with the "` + subscription.metadata[planField] + `" plan and id "` + subscription.id + `". Either update the existing subscription or cancel it and create a new one`);
   } else {
@@ -947,7 +785,7 @@ async function createHostedCheckoutSession(stripe, params) {
   }
   let productItems = await sync(stripe, {
     products: products$1
-  }, usedCustomerMeters, params.interval);
+  }, params.interval);
   console.log(`Creating a new checkout session for subscription "` + params.config.ref + `" plan "` + planId + `"...`);
   let match$2 = params.config.termsOfServiceConsent;
   let session = await stripe.checkout.sessions.create({
@@ -977,28 +815,10 @@ async function createHostedCheckoutSession(stripe, params) {
     allow_promotion_codes: params.allowPromotionCodes,
     discounts: params.discounts,
     customer: customer.id,
-    line_items: productItems.map(param => {
-      let price = param.price;
-      let match = price.recurring;
-      let id = price.id;
-      if (match === null) {
-        return {
-          price: id,
-          quantity: 1
-        };
-      }
-      let tmp = match.meter;
-      if (tmp === null) {
-        return {
-          price: id,
-          quantity: 1
-        };
-      } else {
-        return {
-          price: id
-        };
-      }
-    })
+    line_items: productItems.map(param => ({
+      price: param.price.id,
+      quantity: 1
+    }))
   });
   let url = session.url;
   let tmp;
@@ -1080,48 +900,16 @@ async function updateSubscriptionPlan(stripe, params) {
     let processedData = processData(data, config);
     let products = config.products(plan, data);
     let products$1 = products.length !== 0 ? products : Stdlib_JsError.throwWithMessage(`Plan "` + newPlanId + `" doesn't have any products configured`);
-    let usedCustomerMeters = new Set();
-    let otherSubscriptions = await listSubscriptions(stripe, config, subscription.customer);
-    otherSubscriptions.forEach(s => {
-      if (s.id !== subscription.id && !isTerminatedStatus(s.status)) {
-        s.items.data.forEach(item => {
-          let meterEventName = item.price.metadata["#meter_event_name"];
-          if (meterEventName !== undefined) {
-            usedCustomerMeters.add(meterEventName);
-            return;
-          }
-        });
-        return;
-      }
-    });
     let productItems = await sync(stripe, {
       products: products$1
-    }, usedCustomerMeters, params.interval);
+    }, params.interval);
     let itemUpdates = subscription.items.data.map(item => ({
       id: item.id,
       deleted: true
-    }));
-    productItems.forEach(param => {
-      let price = param.price;
-      let match = price.recurring;
-      let id = price.id;
-      let item;
-      if (match === null) {
-        item = {
-          price: id,
-          quantity: 1
-        };
-      } else {
-        let tmp = match.meter;
-        item = tmp === null ? ({
-            price: id,
-            quantity: 1
-          }) : ({
-            price: id
-          });
-      }
-      itemUpdates.push(item);
-    });
+    })).concat(productItems.map(param => ({
+      price: param.price.id,
+      quantity: 1
+    })));
     let newMetadata = Object.fromEntries(processedData.metadataFields.map(name => [
       name,
       processedData.dict[name]
@@ -1194,8 +982,6 @@ let Metadata = {
 export {
   make,
   makeFindByMetadata,
-  Meter,
-  MeterEvent,
   Price,
   Product,
   ProductCatalog,
