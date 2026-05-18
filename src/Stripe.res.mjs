@@ -1063,10 +1063,20 @@ async function upgradeSubscription(stripe, params) {
   let planMetadataFields = match[1];
   let rawPlan = match[0];
   let newPlanId = rawPlan[planField];
-  let isPlanDifferent = planMetadataFields.some(name => subscription.metadata[name] !== rawPlan[name]);
+  let isPlanDifferent = planMetadataFields.some(name => {
+    let currentValue = subscription.metadata[name];
+    if (currentValue !== undefined) {
+      return currentValue !== rawPlan[name];
+    } else {
+      return Stdlib_Option.isSome(rawPlan[name]);
+    }
+  });
   if (isPlanDifferent) {
     let currentPlanId = Stdlib_Option.getOr(subscription.metadata[planField], "<unknown>");
     console.log(`Upgrading subscription "` + subscription.id + `" from plan "` + currentPlanId + `" to "` + newPlanId + `"...`);
+    if (subscription.items.has_more) {
+      Stdlib_JsError.throwWithMessage(`Subscription "` + subscription.id + `" has more items than fit in a single page. Pagination on subscription items is not supported yet`);
+    }
     let processedData = processData(data, config);
     let products = config.products(plan, data);
     let products$1 = products.length !== 0 ? products : Stdlib_JsError.throwWithMessage(`Plan "` + newPlanId + `" doesn't have any products configured`);
@@ -1119,9 +1129,9 @@ async function upgradeSubscription(stripe, params) {
       name,
       rawPlan[name]
     ])));
-    Object.keys(subscription.metadata).forEach(key => {
-      if (Stdlib_Option.isNone(newMetadata[key])) {
-        newMetadata[key] = "";
+    planMetadataFields.forEach(name => {
+      if (Stdlib_Option.isNone(newMetadata[name]) && Stdlib_Option.isSome(subscription.metadata[name])) {
+        newMetadata[name] = "";
         return;
       }
     });

@@ -2002,7 +2002,10 @@ module Billing = {
     let newPlanId = rawPlan->Dict.getUnsafe(planField)
 
     let isPlanDifferent = planMetadataFields->Array.some(name => {
-      currentSubscription.metadata->Dict.get(name) !== Some(rawPlan->Dict.getUnsafe(name))
+      switch currentSubscription.metadata->Dict.get(name) {
+      | Some(currentValue) => currentValue !== rawPlan->Dict.getUnsafe(name)
+      | None => rawPlan->Dict.get(name)->Option.isSome
+      }
     })
 
     if !isPlanDifferent {
@@ -2016,6 +2019,12 @@ module Billing = {
       Console.log(
         `Upgrading subscription "${currentSubscription.id}" from plan "${currentPlanId}" to "${newPlanId}"...`,
       )
+
+      if currentSubscription.items.hasMore {
+        JsError.throwWithMessage(
+          `Subscription "${currentSubscription.id}" has more items than fit in a single page. Pagination on subscription items is not supported yet`,
+        )
+      }
 
       let processedData = processData(data, ~config)
 
@@ -2046,7 +2055,6 @@ module Billing = {
         ~interval=?params.interval,
       )
 
-      // Delete every existing item, then add items for the new plan.
       let itemUpdates: array<Subscription.itemUpdateParam> =
         currentSubscription.items.data->Array.map(item => {
           Subscription.id: item.id,
@@ -2060,8 +2068,6 @@ module Billing = {
         itemUpdates->Array.push(item)->ignore
       })
 
-      // Rebuild metadata fresh; clear any stale keys from the previous plan by setting them
-      // to empty string (Stripe's convention for "unset this key").
       let newMetadata =
         processedData["metadataFields"]
         ->Array.map(name => (name, processedData["dict"]->Dict.getUnsafe(name)))
@@ -2069,11 +2075,15 @@ module Billing = {
           planMetadataFields->Array.map(name => (name, rawPlan->Dict.getUnsafe(name))),
         )
         ->Dict.fromArray
-      currentSubscription.metadata
-      ->Dict.keysToArray
-      ->Array.forEach(key => {
-        if newMetadata->Dict.get(key)->Option.isNone {
-          newMetadata->Dict.set(key, "")
+      // Only unset framework-managed plan fields from the prior plan; leave any
+      // metadata the framework didn't write (analytics tags etc.) untouched.
+      // Empty string is Stripe's "unset this key" sentinel.
+      planMetadataFields->Array.forEach(name => {
+        if (
+          newMetadata->Dict.get(name)->Option.isNone &&
+            currentSubscription.metadata->Dict.get(name)->Option.isSome
+        ) {
+          newMetadata->Dict.set(name, "")
         }
       })
 
