@@ -11,7 +11,7 @@ import * as S$RescriptSchema from "rescript-schema/src/S.res.mjs";
 import * as Primitive_exceptions from "@rescript/runtime/lib/es6/Primitive_exceptions.js";
 
 function make(prim) {
-  return new Stripe(prim, {"telemetry": false});
+  return new Stripe(prim, {"telemetry": false, "apiVersion": "2025-11-17.clover"});
 }
 
 function makeFindByMetadata(name, list, retrieve) {
@@ -189,7 +189,7 @@ function getPriceConfig(productConfig, interval) {
   }
 }
 
-async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, interval) {
+async function syncProduct(stripe, productConfig, meters, interval) {
   console.log(`Searching for active product "` + productConfig.ref + `"...`);
   let p = await findByMetadata(stripe, {
     "#product_ref": productConfig.ref
@@ -257,100 +257,74 @@ async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, in
       if (match.TAG === "Metered") {
         let ref = match.ref;
         let meters$1 = meters !== undefined ? meters : Stdlib_JsError.throwWithMessage(`The "meters" argument is required when product catalog contains a Metered price`);
-        let usedCustomerMeters$1 = usedCustomerMeters !== undefined ? usedCustomerMeters : Stdlib_JsError.throwWithMessage(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`);
-        let getEventName = (meterRef, _counterOpt) => {
-          while (true) {
-            let counterOpt = _counterOpt;
-            let counter = counterOpt !== undefined ? counterOpt : 0;
-            let eventName = counter !== 0 ? meterRef + `_` + (counter + 1 | 0).toString() : meterRef;
-            if (!usedCustomerMeters$1.has(eventName)) {
-              return eventName;
-            }
-            _counterOpt = counter + 1 | 0;
-            continue;
-          };
-        };
-        let eventName = getEventName(ref, undefined);
-        let meter = meters$1[eventName];
+        let meter = meters$1[ref];
         let meter$1;
         if (meter !== undefined) {
           meter$1 = meter;
         } else {
-          console.log(`Meter "` + eventName + `" does not exist. Creating...`);
+          console.log(`Meter "` + ref + `" does not exist. Creating...`);
           let meter$2 = await stripe.billing.meters.create({
             default_aggregation: {
               formula: "sum"
             },
             display_name: ref,
-            event_name: eventName
+            event_name: ref
           });
-          console.log(`Meter "` + eventName + `" successfully created. Meter ID: ` + meter$2.id);
+          console.log(`Meter "` + ref + `" successfully created. Meter ID: ` + meter$2.id);
+          meters$1[ref] = meter$2;
           meter$1 = meter$2;
         }
         match$1 = [
           {
-            "#meter_ref": ref,
-            "#meter_event_name": eventName
+            "#meter_ref": ref
           },
           {
             interval: match.interval,
             meter: meter$1.id,
             usage_type: "metered"
-          },
-          ref === eventName,
-          ref === eventName ? undefined : `Copy with meter "` + eventName + `"`
+          }
         ];
       } else {
         match$1 = [
           undefined,
           {
             interval: match.interval
-          },
-          true,
-          undefined
+          }
         ];
       }
     } else {
       match$1 = [
         undefined,
-        undefined,
-        false,
         undefined
       ];
     }
-    let transferLookupKey = match$1[2];
     let match$2 = priceConfig.lookupKey;
     return await stripe.prices.create({
       currency: priceConfig.currency,
       product: product.id,
       metadata: match$1[0],
-      nickname: match$1[3],
       recurring: match$1[1],
       unit_amount: priceConfig.unitAmountInCents,
       unit_amount_decimal: priceConfig.unitAmountDecimal,
-      lookup_key: transferLookupKey && match$2 !== undefined && match$2 ? priceConfig.ref : undefined,
-      transfer_lookup_key: transferLookupKey
+      lookup_key: match$2 !== undefined && match$2 ? priceConfig.ref : undefined,
+      transfer_lookup_key: true
     });
   };
   let priceConfig = getPriceConfig(productConfig, interval);
   let existingPrice = prices.data.find(price => {
     let tmp = false;
     if (priceConfig.currency === price.currency) {
+      let match = priceConfig.lookupKey;
+      let match$1 = price.lookup_key;
       let tmp$1;
-      if (price.metadata["#meter_ref"] === price.metadata["#meter_event_name"]) {
-        let match = priceConfig.lookupKey;
-        let match$1 = price.lookup_key;
-        let exit = 0;
-        if (match !== undefined && match) {
-          tmp$1 = match$1 === null ? false : priceConfig.ref === match$1;
-        } else {
-          exit = 1;
-        }
-        if (exit === 1) {
-          tmp$1 = match$1 === null;
-        }
+      let exit = 0;
+      if (match !== undefined && match) {
+        tmp$1 = match$1 === null ? false : priceConfig.ref === match$1;
       } else {
-        tmp$1 = true;
+        exit = 1;
+      }
+      if (exit === 1) {
+        tmp$1 = match$1 === null;
       }
       tmp = tmp$1;
     }
@@ -361,24 +335,18 @@ async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, in
     let match$3 = priceConfig.recurring;
     if (match$2 === null) {
       return match$3 === undefined;
-    }
-    if (match$3 === undefined) {
-      return false;
-    }
-    if (match$3.TAG !== "Metered") {
-      if (match$2.usage_type === "licensed" && match$2.interval === match$3.interval) {
+    } else if (match$3 !== undefined) {
+      if (match$3.TAG === "Metered") {
+        if (match$2.usage_type === "metered" && match$2.interval === match$3.interval && Stdlib_Option.isSome(Primitive_option.fromNull(match$2.meter))) {
+          return price.metadata["#meter_ref"] === match$3.ref;
+        } else {
+          return false;
+        }
+      } else if (match$2.usage_type === "licensed" && match$2.interval === match$3.interval) {
         return match$2.meter === null;
       } else {
         return false;
       }
-    }
-    let usedCustomerMeters$1 = usedCustomerMeters !== undefined ? usedCustomerMeters : Stdlib_JsError.throwWithMessage(`The "usedCustomerMeters" argument is required when product catalog contains a Metered price`);
-    if (!(match$2.usage_type === "metered" && match$2.interval === match$3.interval && Stdlib_Option.isSome(Primitive_option.fromNull(match$2.meter)) && price.metadata["#meter_ref"] === match$3.ref)) {
-      return false;
-    }
-    let meterEventName = price.metadata["#meter_event_name"];
-    if (meterEventName !== undefined) {
-      return !usedCustomerMeters$1.has(meterEventName);
     } else {
       return false;
     }
@@ -399,7 +367,7 @@ async function syncProduct(stripe, productConfig, meters, usedCustomerMeters, in
   };
 }
 
-async function sync(stripe, productCatalog, usedCustomerMeters, interval) {
+async function sync(stripe, productCatalog, interval) {
   let isMeterNeeded = productCatalog.products.some(p => p.prices.some(p => {
     let match = p.recurring;
     if (match !== undefined) {
@@ -424,7 +392,7 @@ async function sync(stripe, productCatalog, usedCustomerMeters, interval) {
   } else {
     meters = undefined;
   }
-  let products = await Promise.all(productCatalog.products.map(p => syncProduct(stripe, p, meters, usedCustomerMeters, interval)));
+  let products = await Promise.all(productCatalog.products.map(p => syncProduct(stripe, p, meters, interval)));
   console.log(`Successfully finished syncing products`);
   return products;
 }
@@ -738,19 +706,45 @@ function processData(data, config) {
   };
 }
 
-async function internalRetrieveSubscription(stripe, data, config, customerId, usedMetersAcc) {
+function processPlan(plan, config) {
+  let planMetadataFields = [planField];
+  let planSchema = S$RescriptSchema.union(config.plans.map(param => {
+    let planConfig = param[1];
+    let planRef = param[0];
+    return S$RescriptSchema.object(s => {
+      let matchesCounter = {
+        contents: -1
+      };
+      s.tag(planField, planRef);
+      return planConfig({
+        field: param => {
+          let fieldName = param.fieldName;
+          planMetadataFields.push(fieldName);
+          return s.f(fieldName, param.coereced);
+        },
+        tag: (param, value) => {
+          let fieldName = param.fieldName;
+          planMetadataFields.push(fieldName);
+          s.f(fieldName, S$RescriptSchema.literal(S$RescriptSchema.reverseConvertOrThrow(value, param.coereced)));
+        },
+        matches: schema => {
+          matchesCounter.contents = matchesCounter.contents + 1 | 0;
+          return s.f(`#matches` + matchesCounter.contents.toString(), schema);
+        }
+      });
+    });
+  }));
+  let rawPlan = S$RescriptSchema.reverseConvertOrThrow(plan, planSchema);
+  return [
+    rawPlan,
+    planMetadataFields
+  ];
+}
+
+async function internalRetrieveSubscription(stripe, data, config, customerId) {
   console.log(`Searching for an existing "` + config.ref + `" subscription for customer "` + customerId + `"...`);
   let subscriptions = await listSubscriptions(stripe, config, customerId);
   let s = subscriptions.find(subscription => {
-    if (usedMetersAcc !== undefined) {
-      subscription.items.data.forEach(item => {
-        let meterEventName = item.price.metadata["#meter_event_name"];
-        if (meterEventName !== undefined) {
-          usedMetersAcc.add(meterEventName);
-          return;
-        }
-      });
-    }
     if (data.primaryFields.every(name => subscription.metadata[name] === data.dict[name])) {
       console.log(`Found an existing subscription. Subscription ID: ` + subscription.id);
       if (isTerminatedStatus(subscription.status)) {
@@ -806,7 +800,7 @@ async function retrieveSubscriptionWithCustomer(stripe, config, data) {
   } else {
     preset$1 = undefined;
   }
-  let subscription = await internalRetrieveSubscription(stripe, processedData, config, customer.id, undefined);
+  let subscription = await internalRetrieveSubscription(stripe, processedData, config, customer.id);
   if (subscription !== undefined) {
     return {
       customer: customer,
@@ -854,42 +848,16 @@ async function preset(stripe, preset$1) {
 
 async function createHostedCheckoutSession(stripe, params) {
   let data = processData(params.data, params.config);
-  let planMetadataFields = [planField];
-  let planSchema = S$RescriptSchema.union(params.config.plans.map(param => {
-    let planConfig = param[1];
-    let planRef = param[0];
-    return S$RescriptSchema.object(s => {
-      let matchesCounter = {
-        contents: -1
-      };
-      s.tag(planField, planRef);
-      return planConfig({
-        field: param => {
-          let fieldName = param.fieldName;
-          planMetadataFields.push(fieldName);
-          return s.f(fieldName, param.coereced);
-        },
-        tag: (param, value) => {
-          let fieldName = param.fieldName;
-          planMetadataFields.push(fieldName);
-          s.f(fieldName, S$RescriptSchema.literal(S$RescriptSchema.reverseConvertOrThrow(value, param.coereced)));
-        },
-        matches: schema => {
-          matchesCounter.contents = matchesCounter.contents + 1 | 0;
-          return s.f(`#matches` + matchesCounter.contents.toString(), schema);
-        }
-      });
-    });
-  }));
-  let rawPlan = S$RescriptSchema.reverseConvertOrThrow(params.plan, planSchema);
+  let match = processPlan(params.plan, params.config);
+  let rawPlan = match[0];
   let now = new Date();
   let planId = rawPlan[planField];
   let products = params.config.products(params.plan, params.data);
   let products$1;
   if (products.length !== 0) {
-    let match = params.billPastUsage;
-    if (match !== undefined) {
-      let startedAt = match.startedAt;
+    let match$1 = params.billPastUsage;
+    if (match$1 !== undefined) {
+      let startedAt = match$1.startedAt;
       products$1 = Stdlib_Array.filterMap(products, p => {
         let priceConfig = getPriceConfig(p, params.interval);
         let match = priceConfig.recurring;
@@ -929,8 +897,7 @@ async function createHostedCheckoutSession(stripe, params) {
     products$1 = Stdlib_JsError.throwWithMessage(`Plan "` + planId + `" doesn't have any products configured`);
   }
   let customer = await findOrCreateByMetadata(stripe, data.customerMetadata);
-  let usedCustomerMeters = new Set();
-  let subscription = await internalRetrieveSubscription(stripe, data, params.config, customer.id, usedCustomerMeters);
+  let subscription = await internalRetrieveSubscription(stripe, data, params.config, customer.id);
   if (subscription !== undefined) {
     Stdlib_JsError.throwWithMessage(`There's already an active "` + params.config.ref + `" subscription for ` + data.primaryFields.map(name => name + `=` + data.dict[name]).join(", ") + ` with the "` + subscription.metadata[planField] + `" plan and id "` + subscription.id + `". Either update the existing subscription or cancel it and create a new one`);
   } else {
@@ -938,9 +905,9 @@ async function createHostedCheckoutSession(stripe, params) {
   }
   let productItems = await sync(stripe, {
     products: products$1
-  }, usedCustomerMeters, params.interval);
+  }, params.interval);
   console.log(`Creating a new checkout session for subscription "` + params.config.ref + `" plan "` + planId + `"...`);
-  let match$1 = params.config.termsOfServiceConsent;
+  let match$2 = params.config.termsOfServiceConsent;
   let session = await stripe.checkout.sessions.create({
     automatic_tax: params.automaticTax,
     customer_update: {
@@ -951,7 +918,7 @@ async function createHostedCheckoutSession(stripe, params) {
     mode: "subscription",
     success_url: params.successUrl,
     cancel_url: params.cancelUrl,
-    consent_collection: match$1 !== undefined && match$1 ? ({
+    consent_collection: match$2 !== undefined && match$2 ? ({
         terms_of_service: "required"
       }) : undefined,
     subscription_data: {
@@ -959,7 +926,7 @@ async function createHostedCheckoutSession(stripe, params) {
       metadata: Object.fromEntries(data.metadataFields.map(name => [
         name,
         data.dict[name]
-      ]).concat(planMetadataFields.map(name => [
+      ]).concat(match[1].map(name => [
         name,
         rawPlan[name]
       ]))),
@@ -1045,6 +1012,95 @@ function verifyUpdate(subscription, previousAttributes, config) {
   };
 }
 
+async function updateSubscriptionPlan(stripe, params) {
+  let plan = params.plan;
+  let data = params.data;
+  let subscription = params.subscription;
+  let config = params.config;
+  let match = processPlan(plan, config);
+  let planMetadataFields = match[1];
+  let rawPlan = match[0];
+  let newPlanId = rawPlan[planField];
+  let isPlanDifferent = planMetadataFields.some(name => {
+    let currentValue = subscription.metadata[name];
+    if (currentValue !== undefined) {
+      return currentValue !== rawPlan[name];
+    } else {
+      return Stdlib_Option.isSome(rawPlan[name]);
+    }
+  });
+  if (isPlanDifferent) {
+    let id = subscription.metadata[planField];
+    let currentPlanId = id !== undefined ? id : Stdlib_JsError.throwWithMessage(`Subscription "` + subscription.id + `" has no "` + planField + `" metadata field. Cannot determine the current plan.`);
+    console.log(`Updating subscription "` + subscription.id + `" plan from "` + currentPlanId + `" to "` + newPlanId + `"...`);
+    if (subscription.items.has_more) {
+      Stdlib_JsError.throwWithMessage(`Subscription "` + subscription.id + `" has more items than fit in a single page. Pagination on subscription items is not supported yet`);
+    }
+    let processedData = processData(data, config);
+    let products = config.products(plan, data);
+    let products$1 = products.length !== 0 ? products : Stdlib_JsError.throwWithMessage(`Plan "` + newPlanId + `" doesn't have any products configured`);
+    let productItems = await sync(stripe, {
+      products: products$1
+    }, params.interval);
+    let itemUpdates = subscription.items.data.map(item => ({
+      id: item.id,
+      deleted: true
+    })).concat(productItems.map(param => {
+      let price = param.price;
+      let match = price.recurring;
+      let id = price.id;
+      if (match === null) {
+        return {
+          price: id,
+          quantity: 1
+        };
+      }
+      let tmp = match.meter;
+      if (tmp === null) {
+        return {
+          price: id,
+          quantity: 1
+        };
+      } else {
+        return {
+          price: id
+        };
+      }
+    }));
+    let newMetadata = Object.fromEntries(processedData.metadataFields.map(name => [
+      name,
+      processedData.dict[name]
+    ]).concat(planMetadataFields.map(name => [
+      name,
+      rawPlan[name]
+    ])));
+    planMetadataFields.forEach(name => {
+      if (Stdlib_Option.isNone(newMetadata[name]) && Stdlib_Option.isSome(subscription.metadata[name])) {
+        newMetadata[name] = "";
+        return;
+      }
+    });
+    let updated = await stripe.subscriptions.update(subscription.id, {
+      metadata: newMetadata,
+      items: itemUpdates,
+      proration_behavior: params.prorationBehavior,
+      payment_behavior: params.paymentBehavior,
+      billing_cycle_anchor: params.billingCycleAnchor,
+      proration_date: params.prorationDate
+    });
+    console.log(`Successfully updated subscription "` + updated.id + `" to plan "` + newPlanId + `"`);
+    return {
+      TAG: "Updated",
+      _0: updated
+    };
+  }
+  console.log(`Subscription "` + subscription.id + `" is already on plan "` + newPlanId + `". Skipping update.`);
+  return {
+    TAG: "AlreadyOnPlan",
+    _0: subscription
+  };
+}
+
 let Billing = {
   Plan: Plan,
   getCurrentPeriodStart: getCurrentPeriodStart,
@@ -1059,7 +1115,8 @@ let Billing = {
   preset: preset,
   createHostedCheckoutSession: createHostedCheckoutSession,
   verify: verify,
-  verifyUpdate: verifyUpdate
+  verifyUpdate: verifyUpdate,
+  updateSubscriptionPlan: updateSubscriptionPlan
 };
 
 function ref(fieldName, schema) {

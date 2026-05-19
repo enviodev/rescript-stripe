@@ -68,18 +68,14 @@ module CourseSubscription = {
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 10_00,
-                recurring: Licensed({
-                  interval: Month,
-                }),
+                recurring: Licensed({interval: Month}),
               },
               {
                 ref: `starter_course_${data.courseId}_yearly`,
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 100_00,
-                recurring: Licensed({
-                  interval: Year,
-                }),
+                recurring: Licensed({interval: Year}),
               },
             ],
           },
@@ -94,50 +90,35 @@ module CourseSubscription = {
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 50_00,
-                recurring: Licensed({
-                  interval: Month,
-                }),
+                recurring: Licensed({interval: Month}),
               },
               {
                 ref: `pro_course_${data.courseId}_yearly`,
                 lookupKey: true,
                 currency: USD,
                 unitAmountInCents: 500_00,
-                recurring: Licensed({
-                  interval: Year,
-                }),
+                recurring: Licensed({interval: Year}),
               },
             ],
           },
         ]->Array.concat(
-          withExtraSeats ? [
-            {
-              Stripe.ProductCatalog.name: data.courseName ++ " Additional Seats",
-              ref: `pro_course_${data.courseId}_extra_seat`,
-              unitLabel: "user",
-              prices: [
+          withExtraSeats
+            ? [
                 {
+                  Stripe.ProductCatalog.name: data.courseName ++ " Additional Seats",
                   ref: `pro_course_${data.courseId}_extra_seat`,
-                  lookupKey: true,
-                  currency: USD,
-                  unitAmountInCents: 10_00,
-                  recurring: Metered({
-                    interval: Month,
-                    ref: `extra_seat`,
-                  }),
+                  unitLabel: "user",
+                  prices: [
+                    {
+                      ref: `pro_course_${data.courseId}_extra_seat`,
+                      currency: USD,
+                      unitAmountInCents: 10_00,
+                      recurring: Metered({interval: Month, ref: `extra_seat`}),
+                    },
+                  ],
                 },
-                {
-                  ref: `pro_course_${data.courseId}_extra_seat_yearly`,
-                  currency: USD,
-                  unitAmountInCents: 10_00,
-                  recurring: Metered({
-                    interval: Year,
-                    ref: `extra_seat`,
-                  }),
-                }
               ]
-            }]
-          : []
+            : [],
         )
       }
     },
@@ -236,26 +217,57 @@ subscription->Stripe.Billing.verify(CourseSubscription.config)->Option.map(subsc
 })
 ```
 
-### Get meter event name by reference
+### Update subscription plan
+
+Swap an existing subscription's plan in-place. Old plan product items are
+removed, new plan items are added, and the subscription metadata is
+updated to reflect the new plan. Same-plan calls short-circuit (no API
+write) and return `AlreadyOnPlan`.
 
 ```rescript
-let eventName = subscription->Stripe.Subscription.getMeterEventName(~meterRef="extra_seat")
-```
+let {subscription} = await stripe->Stripe.Billing.retrieveSubscriptionWithCustomer({
+  userId: "dzakh",
+  courseId: "rescript-schema-to-the-moon",
+  courseName: "ReScript Schema to the Moon",
+}, ~config=CourseSubscription.config)
 
-ReScript Stripe might create multiple meters under the hood, so you need to call the function to get the right meter event name to report usage.
-
-This is done because you can report meter usage per customer, so if a customer has multiple subscriptions, you need to have different meters for each one. ReScript Stripe manages this for you.
-
-### Report usage for a subscription
-
-```rescript
-let _ =
-  await stripe->Stripe.Subscription.reportMeterUsage(
+switch subscription {
+| Some(subscription) =>
+  let result = await stripe->Stripe.Billing.updateSubscriptionPlan({
+    config: CourseSubscription.config,
     subscription,
-    ~meterRef="extra_seat",
-    ~value=1,
-  )
+    data: {
+      userId: "dzakh",
+      courseId: "rescript-schema-to-the-moon",
+      courseName: "ReScript Schema to the Moon",
+    },
+    plan: Pro({withExtraSeats: true}),
+    interval: Month,
+    // Bill the prorated difference immediately and attempt to collect.
+    prorationBehavior: AlwaysInvoice,
+    paymentBehavior: DefaultIncomplete,
+    billingCycleAnchor: Unchanged,
+  })
+  switch result {
+  | AlreadyOnPlan(_) => Console.log("Customer is already on this plan")
+  | Updated(_) => Console.log("Plan updated")
+  }
+| None => ()
+}
 ```
+
+Options:
+
+- `prorationBehavior` — `AlwaysInvoice` (charge the difference now),
+  `CreateProrations` (default; stage prorations for the next renewal),
+  or `NoProrations`.
+- `paymentBehavior` — controls how the proration invoice is collected.
+  Use `DefaultIncomplete` when you need the client to confirm a
+  PaymentIntent (e.g. SCA); `AllowIncomplete` is Stripe's default.
+- `billingCycleAnchor` — `Now` resets the cycle and bills from today;
+  `Unchanged` keeps the original renewal date.
+- `prorationDate` — override the proration calculation point (Unix
+  timestamp) to match a preview from Stripe's invoice preview endpoint.
 
 ### Customer portal helpers
 
@@ -328,4 +340,4 @@ Console.log(session.url)
 ```
 
 > 🧠 It'll throw if the subscription already exist
-> 🧠 Customer, products, prices, meters are automatically created when they are not found
+> 🧠 Customer, products, prices are automatically created when they are not found
