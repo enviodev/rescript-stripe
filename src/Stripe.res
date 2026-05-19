@@ -1934,8 +1934,13 @@ module Billing = {
       )
       AlreadyOnPlan(subscription)
     } else {
-      let currentPlanId =
-        currentSubscription.metadata->Dict.get(planField)->Option.getOr("<unknown>")
+      let currentPlanId = switch currentSubscription.metadata->Dict.get(planField) {
+      | Some(id) => id
+      | None =>
+        JsError.throwWithMessage(
+          `Subscription "${currentSubscription.id}" has no "${planField}" metadata field. Cannot determine the current plan.`,
+        )
+      }
       Console.log(
         `Updating subscription "${currentSubscription.id}" plan from "${currentPlanId}" to "${newPlanId}"...`,
       )

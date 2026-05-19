@@ -1030,7 +1030,8 @@ async function updateSubscriptionPlan(stripe, params) {
     }
   });
   if (isPlanDifferent) {
-    let currentPlanId = Stdlib_Option.getOr(subscription.metadata[planField], "<unknown>");
+    let id = subscription.metadata[planField];
+    let currentPlanId = id !== undefined ? id : Stdlib_JsError.throwWithMessage(`Subscription "` + subscription.id + `" has no "` + planField + `" metadata field. Cannot determine the current plan.`);
     console.log(`Updating subscription "` + subscription.id + `" plan from "` + currentPlanId + `" to "` + newPlanId + `"...`);
     if (subscription.items.has_more) {
       Stdlib_JsError.throwWithMessage(`Subscription "` + subscription.id + `" has more items than fit in a single page. Pagination on subscription items is not supported yet`);
