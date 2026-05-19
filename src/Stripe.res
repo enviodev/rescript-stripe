@@ -223,10 +223,17 @@ module Meter = {
     id: string,
     object: string,
     created: int,
+    // customer_mapping
     @as("display_name")
     displayName: string,
     @as("event_name")
     eventName: string,
+    // event_time_window
+    // livemode
+    // status
+    // status_transitions
+    // updated
+    // value_settings
   }
 
   type aggregationFormula = | @as("sum") Sum | @as("count") Count
@@ -240,6 +247,12 @@ module Meter = {
     displayName: string,
     @as("event_name")
     eventName: string,
+    @as("customer_mapping")
+    customerMapping?: unknown,
+    @as("event_time_window")
+    eventTimeWindow?: unknown,
+    @as("value_settings")
+    valueSettings?: unknown,
   }
 
   @scope(("billing", "meters")) @send
@@ -255,6 +268,19 @@ module Meter = {
   }
   @scope(("billing", "meters")) @send
   external list: (stripe, listParams) => promise<page<t>> = "list"
+}
+
+module MeterEvent = {
+  type t
+  type createParams = {
+    @as("event_name")
+    eventName: string,
+    payload: dict<string>,
+    identifier?: string,
+    timestamp?: int,
+  }
+  @scope(("billing", "meterEvents")) @send
+  external create: (stripe, createParams) => promise<t> = "create"
 }
 
 module Price = {
@@ -880,6 +906,46 @@ module Subscription = {
     }
   }
 
+  let getMeterId = (subscription, ~meterRef) => {
+    subscription.items.data
+    ->Array.find(item => {
+      item.price.metadata->Dict.getUnsafe("#meter_ref") === meterRef
+    })
+    ->Option.flatMap(i => i.price.recurring->Null.toOption)
+    ->Option.flatMap(r => r.meter->Null.toOption)
+  }
+
+  let getMeterEventName = (subscription, ~meterRef) => {
+    subscription.items.data
+    ->Array.find(item => {
+      item.price.metadata->Dict.getUnsafe("#meter_ref") === meterRef
+    })
+    ->Option.flatMap(i => i.price.metadata->Dict.get("#meter_event_name"))
+  }
+
+  let reportMeterUsage = async (
+    stripe,
+    subscription,
+    ~meterRef,
+    ~value,
+    ~timestamp=?,
+    ~identifier=?,
+  ) => {
+    switch getMeterEventName(subscription, ~meterRef) {
+    | Some(meterEventName) =>
+      let _ = await stripe->MeterEvent.create({
+        eventName: meterEventName,
+        payload: dict{
+          "value": value->Int.toString,
+          "stripe_customer_id": subscription.customer,
+        },
+        ?timestamp,
+        ?identifier,
+      })
+      Ok()
+    | None => Error(#MeterNotFound)
+    }
+  }
 }
 
 module CustomerPortal = {

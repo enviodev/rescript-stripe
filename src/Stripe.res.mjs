@@ -136,6 +136,8 @@ function makeFindByMetadata(name, list, retrieve) {
 
 let Meter = {};
 
+let MeterEvent = {};
+
 let Price = {};
 
 let findByMetadata = makeFindByMetadata("product", (stripe, params) => stripe.products.list({
@@ -435,8 +437,43 @@ function isTerminatedStatus(status) {
   }
 }
 
+function getMeterId(subscription, meterRef) {
+  return Stdlib_Option.flatMap(Stdlib_Option.flatMap(subscription.items.data.find(item => item.price.metadata["#meter_ref"] === meterRef), i => Primitive_option.fromNull(i.price.recurring)), r => Primitive_option.fromNull(r.meter));
+}
+
+function getMeterEventName(subscription, meterRef) {
+  return Stdlib_Option.flatMap(subscription.items.data.find(item => item.price.metadata["#meter_ref"] === meterRef), i => i.price.metadata["#meter_event_name"]);
+}
+
+async function reportMeterUsage(stripe, subscription, meterRef, value, timestamp, identifier) {
+  let meterEventName = getMeterEventName(subscription, meterRef);
+  if (meterEventName !== undefined) {
+    await stripe.billing.meterEvents.create({
+      event_name: meterEventName,
+      payload: {
+        value: value.toString(),
+        stripe_customer_id: subscription.customer
+      },
+      identifier: identifier,
+      timestamp: timestamp
+    });
+    return {
+      TAG: "Ok",
+      _0: undefined
+    };
+  } else {
+    return {
+      TAG: "Error",
+      _0: "MeterNotFound"
+    };
+  }
+}
+
 let Subscription = {
-  isTerminatedStatus: isTerminatedStatus
+  isTerminatedStatus: isTerminatedStatus,
+  getMeterId: getMeterId,
+  getMeterEventName: getMeterEventName,
+  reportMeterUsage: reportMeterUsage
 };
 
 function prefillEmail(link, email) {
@@ -1099,6 +1136,7 @@ export {
   make,
   makeFindByMetadata,
   Meter,
+  MeterEvent,
   Price,
   Product,
   ProductCatalog,
