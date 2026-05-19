@@ -1706,8 +1706,10 @@ module Billing = {
         ->Array.filterMap(p => {
           let priceConfig = ProductCatalog.getPriceConfig(p, ~interval=?params.interval)
           switch priceConfig.recurring {
-          | None => None
-          | Some(_) =>
+          | None
+          | Some(Metered(_)) =>
+            None
+          | Some(Licensed(_)) =>
             let pastUsageBill = calculatePastUsageBill(
               ~priceAmount=priceConfig.unitAmountInCents,
               ~startedAt,

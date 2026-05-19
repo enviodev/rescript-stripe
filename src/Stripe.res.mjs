@@ -864,6 +864,9 @@ async function createHostedCheckoutSession(stripe, params) {
         if (match === undefined) {
           return;
         }
+        if (match.TAG === "Metered") {
+          return;
+        }
         let pastUsageBill = calculatePastUsageBill(priceConfig.unitAmountInCents, startedAt, now, params.interval);
         if (pastUsageBill === 0) {
           return;
