@@ -2,6 +2,15 @@
 
 import Ava from "ava";
 import * as Stripe from "../src/Stripe.res.mjs";
+import * as S$RescriptSchema from "rescript-schema/src/S.res.mjs";
+
+Ava("Metadata.ref supports optional schemas", t => {
+  let optString = Stripe.Metadata.ref("opt_string", S$RescriptSchema.option(S$RescriptSchema.string));
+  let optInt = Stripe.Metadata.ref("opt_int", S$RescriptSchema.option(S$RescriptSchema.int));
+  t.deepEqual(S$RescriptSchema.parseOrThrow("hello", optString.coereced), "hello");
+  t.deepEqual(S$RescriptSchema.parseOrThrow("5", optInt.coereced), 5);
+  t.deepEqual(S$RescriptSchema.parseOrThrow(undefined, optInt.coereced), undefined);
+});
 
 Ava("Calculate past usage", t => {
   t.deepEqual(Stripe.Billing.calculatePastUsageBill(100, new Date("2025-01-01"), new Date("2025-01-01"), "month"), 0);

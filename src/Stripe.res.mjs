@@ -1120,10 +1120,13 @@ let Billing = {
 };
 
 function ref(fieldName, schema) {
+  let inner = schema.t;
+  let coereced;
+  coereced = typeof inner !== "object" || inner.TAG !== "option" ? S$RescriptSchema.coerce(S$RescriptSchema.string, schema) : S$RescriptSchema.option(S$RescriptSchema.coerce(S$RescriptSchema.string, inner._0));
   return {
     fieldName: fieldName,
     schema: schema,
-    coereced: S$RescriptSchema.coerce(S$RescriptSchema.string, schema)
+    coereced: coereced
   };
 }
 

@@ -2018,7 +2018,16 @@ module Billing = {
 
 module Metadata = {
   let ref = (fieldName: string, schema: S.t<'value>): metadataRef<'config, 'value> => {
-    {"fieldName": fieldName, "schema": schema, "coereced": S.string->S.coerce(schema)}->Obj.magic
+    // Metadata values are always stored as strings, so we coerce a string into
+    // the target schema. S.coerce doesn't support coercing a string directly to
+    // an optional schema (`string | undefined`), so for optional schemas we
+    // coerce the inner schema and wrap the result back into an option. This way
+    // a missing metadata key parses to None and a present one is coerced.
+    let coereced = switch schema->S.classify {
+    | Option(inner) => S.option(S.string->S.coerce(inner))->Obj.magic
+    | _ => S.string->S.coerce(schema)
+    }
+    {"fieldName": fieldName, "schema": schema, "coereced": coereced}->Obj.magic
   }
 
   let get = (
