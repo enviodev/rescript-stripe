@@ -14,11 +14,14 @@ function make(prim) {
   return new Stripe(prim, {"telemetry": false, "apiVersion": "2025-11-17.clover"});
 }
 
-function makeFindByMetadata(name, list, retrieve) {
+function makeFindByMetadata(name, list, retrieve, refreshIntervalMsOpt, nowOpt) {
+  let refreshIntervalMs = refreshIntervalMsOpt !== undefined ? refreshIntervalMsOpt : 60000;
+  let now = nowOpt !== undefined ? nowOpt : prim => Date.now();
   let cache = {
     hasMore: true,
     lock: 0,
-    items: []
+    items: [],
+    refreshedAt: 0
   };
   return async (stripe, metadata) => {
     let lock = cache.lock + 1 | 0;
@@ -82,55 +85,71 @@ function makeFindByMetadata(name, list, retrieve) {
       updateCache(data, false, true);
       return data.find(matches);
     };
-    let items = cache.items;
-    if (items.length !== 0) {
-      console.log(`Searching for ` + name + `s by metadata in cache`, metadata);
-      let item = cache.items.find(matches);
-      if (item !== undefined) {
-        console.log(`Successfully found ` + name + ` ID "` + item.id + `" by metadata in cache. Retrieving data...`, metadata);
-        let item$1 = await retrieve(stripe, item.id);
-        let deleted = item$1.deleted;
-        let isValid = deleted ? false : matches(item$1);
-        console.log(name + ` ID "` + item$1.id + `" ` + (
-          deleted ? "is deleted" : (
-              isValid ? "matches metadata lookup. Returning!" : "doesn't match cached metadata"
-            )
-        ), metadata);
-        if (isValid) {
-          return Primitive_option.some(item$1);
+    let lookupFromScratch = async () => {
+      if (cache.lock === lock) {
+        cache.items = [];
+        cache.hasMore = true;
+        cache.refreshedAt = now();
+      }
+      let c = await lookup(undefined);
+      console.log(`Finished looking for ` + name + `s by metadata`, metadata);
+      return c;
+    };
+    let search = async () => {
+      let items = cache.items;
+      if (items.length !== 0) {
+        console.log(`Searching for ` + name + `s by metadata in cache`, metadata);
+        let item = items.find(matches);
+        if (item !== undefined) {
+          console.log(`Successfully found ` + name + ` ID "` + item.id + `" by metadata in cache. Retrieving data...`, metadata);
+          let item$1 = await retrieve(stripe, item.id);
+          let deleted = item$1.deleted;
+          let isValid = deleted ? false : matches(item$1);
+          console.log(name + ` ID "` + item$1.id + `" ` + (
+            deleted ? "is deleted" : (
+                isValid ? "matches metadata lookup. Returning!" : "doesn't match cached metadata"
+              )
+          ), metadata);
+          if (isValid) {
+            return Primitive_option.some(item$1);
+          }
+          let indexInCache = items.findIndex(cacheItem => cacheItem.id === item$1.id);
+          if (indexInCache !== -1) {
+            if (deleted) {
+              items.splice(indexInCache, 1);
+            } else {
+              items[indexInCache] = {
+                id: item$1.id,
+                metadata: item$1.metadata
+              };
+            }
+          }
+          return await search();
         }
-        let indexInCache = cache.items.findIndex(cacheItem => cacheItem.id === item$1.id);
-        if (indexInCache !== -1) {
-          if (deleted) {
-            cache.items.splice(indexInCache, 1);
+        console.log(name + ` by metadata isn't found in cache. Requesting newly created ` + name + `s...`, metadata);
+        let match = await catchUpToCache(items[0].id);
+        if (match !== undefined) {
+          console.log(`Successfully found ` + name + ` "` + match.id + `" by metadata`, metadata);
+          return match;
+        }
+        if (!cache.hasMore) {
+          if (now() - cache.refreshedAt >= refreshIntervalMs) {
+            console.log(name + ` by metadata isn't found in cache. Re-listing ` + name + `s in case an existing one was tagged since...`, metadata);
+            return await lookupFromScratch();
           } else {
-            cache.items[indexInCache] = {
-              id: item$1.id,
-              metadata: item$1.metadata
-            };
+            console.log(name + ` by metadata isn't found`, metadata);
+            return;
           }
         }
-        return;
-      }
-      console.log(name + ` by metadata isn't found in cache. Requesting newly created ` + name + `s...`, metadata);
-      let match$1 = await catchUpToCache(items[0].id);
-      if (match$1 !== undefined) {
-        console.log(`Successfully found ` + name + ` "` + match$1.id + `" by metadata`, metadata);
-        return match$1;
-      }
-      if (cache.hasMore) {
         console.log(`Any new ` + name + ` doesn't match metadata. Looking for older ` + name + `s on server...`, metadata);
         let c = await lookup(Stdlib_Array.last(cache.items).id);
         console.log(`Finished looking for ` + name + `s by metadata`, metadata);
         return c;
       }
-      console.log(name + ` by metadata isn't found`, metadata);
-      return;
-    }
-    console.log(name + ` metadata lookup cache is empty. Looking for ` + name + `s on server...`, metadata);
-    let c$1 = await lookup(undefined);
-    console.log(`Finished looking for ` + name + `s by metadata`, metadata);
-    return c$1;
+      console.log(name + ` metadata lookup cache is empty. Looking for ` + name + `s on server...`, metadata);
+      return await lookupFromScratch();
+    };
+    return await search();
   };
 }
 
@@ -145,7 +164,7 @@ let findByMetadata = makeFindByMetadata("product", (stripe, params) => stripe.pr
   limit: params.limit,
   starting_after: params.starting_after,
   ending_before: params.ending_before
-}), (prim0, prim1) => prim0.products.retrieve(prim1));
+}), (prim0, prim1) => prim0.products.retrieve(prim1), undefined, undefined);
 
 let Product = {
   findByMetadata: findByMetadata
@@ -407,7 +426,7 @@ let findByMetadata$1 = makeFindByMetadata("customer", (stripe, params) => stripe
   limit: params.limit,
   starting_after: params.starting_after,
   ending_before: params.ending_before
-}), (prim0, prim1) => prim0.customers.retrieve(prim1));
+}), (prim0, prim1) => prim0.customers.retrieve(prim1), undefined, undefined);
 
 async function findOrCreateByMetadata(stripe, metadata) {
   let c = await findByMetadata$1(stripe, metadata);
@@ -763,13 +782,25 @@ async function internalRetrieveSubscription(stripe, data, config, customerId) {
   return s;
 }
 
-function retrieveCustomer(stripe, config, data) {
-  return findByMetadata$1(stripe, processData(data, config).customerMetadata);
+async function findCustomer(stripe, customerId, customerMetadata) {
+  if (customerId === undefined) {
+    return await findByMetadata$1(stripe, customerMetadata);
+  }
+  let customer = await stripe.customers.retrieve(customerId);
+  if (Stdlib_Option.getOr(customer.deleted, false)) {
+    return;
+  } else {
+    return customer;
+  }
 }
 
-async function retrieveSubscriptionWithCustomer(stripe, config, data) {
+function retrieveCustomer(stripe, config, customerId, data) {
+  return findCustomer(stripe, customerId, processData(data, config).customerMetadata);
+}
+
+async function retrieveSubscriptionWithCustomer(stripe, config, customerId, data) {
   let processedData = processData(data, config);
-  let customer = await findByMetadata$1(stripe, processedData.customerMetadata);
+  let customer = await findCustomer(stripe, customerId, processedData.customerMetadata);
   if (customer === undefined) {
     return {
       customer: undefined,
@@ -816,11 +847,11 @@ async function retrieveSubscriptionWithCustomer(stripe, config, data) {
   }
 }
 
-async function retrieveSubscription(stripe, config, data) {
-  return (await retrieveSubscriptionWithCustomer(stripe, config, data)).subscription;
+async function retrieveSubscription(stripe, config, customerId, data) {
+  return (await retrieveSubscriptionWithCustomer(stripe, config, customerId, data)).subscription;
 }
 
-async function preset(stripe, preset$1) {
+async function preset(stripe, customerId, preset$1) {
   let processedData = processData(preset$1.data, preset$1.config);
   let presetKey = toPresetKey(preset$1.config, processedData);
   let preset$2 = S$RescriptSchema.reverseConvertToJsonStringOrThrow([
@@ -829,7 +860,7 @@ async function preset(stripe, preset$1) {
   ], toPresetSchema(preset$1.config), undefined);
   let metadata = {};
   metadata[presetKey] = preset$2;
-  let c = await findByMetadata$1(stripe, processedData.customerMetadata);
+  let c = await findCustomer(stripe, customerId, processedData.customerMetadata);
   if (c !== undefined) {
     console.log(`Setting preset for the existing customer...`);
     let c$1 = await stripe.customers.update(c.id, {
@@ -837,6 +868,9 @@ async function preset(stripe, preset$1) {
     });
     console.log(`Successfully set preset for the existing customer`);
     return c$1;
+  }
+  if (customerId !== undefined) {
+    return Stdlib_JsError.throwWithMessage(`Customer "` + customerId + `" is deleted; refusing to create a new one in its place`);
   }
   console.log(`Creating a new customer...`);
   let c$2 = await stripe.customers.create({
@@ -846,7 +880,7 @@ async function preset(stripe, preset$1) {
   return c$2;
 }
 
-async function createHostedCheckoutSession(stripe, params) {
+async function createHostedCheckoutSession(stripe, customerId, params) {
   let data = processData(params.data, params.config);
   let match = processPlan(params.plan, params.config);
   let rawPlan = match[0];
@@ -896,7 +930,13 @@ async function createHostedCheckoutSession(stripe, params) {
   } else {
     products$1 = Stdlib_JsError.throwWithMessage(`Plan "` + planId + `" doesn't have any products configured`);
   }
-  let customer = await findOrCreateByMetadata(stripe, data.customerMetadata);
+  let customer;
+  if (customerId !== undefined) {
+    let c = await findCustomer(stripe, customerId, data.customerMetadata);
+    customer = c !== undefined ? c : Stdlib_JsError.throwWithMessage(`Customer "` + customerId + `" is deleted; refusing to create a new one in its place`);
+  } else {
+    customer = await findOrCreateByMetadata(stripe, data.customerMetadata);
+  }
   let subscription = await internalRetrieveSubscription(stripe, data, params.config, customer.id);
   if (subscription !== undefined) {
     Stdlib_JsError.throwWithMessage(`There's already an active "` + params.config.ref + `" subscription for ` + data.primaryFields.map(name => name + `=` + data.dict[name]).join(", ") + ` with the "` + subscription.metadata[planField] + `" plan and id "` + subscription.id + `". Either update the existing subscription or cancel it and create a new one`);
@@ -1109,6 +1149,7 @@ let Billing = {
   planField: planField,
   listSubscriptions: listSubscriptions,
   calculatePastUsageBill: calculatePastUsageBill,
+  findCustomer: findCustomer,
   retrieveCustomer: retrieveCustomer,
   retrieveSubscriptionWithCustomer: retrieveSubscriptionWithCustomer,
   retrieveSubscription: retrieveSubscription,

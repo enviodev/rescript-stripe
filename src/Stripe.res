@@ -20,6 +20,9 @@ type metadataLookupCache = {
   // Prevent race conditions for updating cache
   mutable lock: int,
   mutable items: array<objectWithMetadata>,
+  // When the cache was last filled from scratch (ms since epoch). A miss
+  // re-lists from scratch at most once per refresh interval.
+  mutable refreshedAt: float,
 }
 
 type page<'item> = {
@@ -38,15 +41,28 @@ type baseListParams = {
   endingBefore?: string,
 }
 
+// The cache holds every object's id and metadata as last listed. New objects
+// are caught up by listing past the newest cached one, but an older object's
+// metadata changes reach the cache only in two ways:
+//   - a cached match is re-read before it is returned; a stale one is
+//     corrected and the search continues;
+//   - a miss re-lists from scratch, at most once per `refreshIntervalMs`, so a
+//     tag added to an existing object elsewhere (another process, an admin
+//     change, the Stripe dashboard) is found instead of reported missing.
+// Without the second, findOrCreateByMetadata would create a duplicate of an
+// object that exists but was tagged after this process cached it.
 let makeFindByMetadata = (
   ~name,
   ~list: (stripe, baseListParams) => promise<page<'item>>,
   ~retrieve,
+  ~refreshIntervalMs=60_000.,
+  ~now=Date.now,
 ) => {
   let cache = {
     hasMore: true,
     lock: 0,
     items: [],
+    refreshedAt: 0.,
   }
 
   async (stripe: stripe, metadata: dict<string>) => {
@@ -124,88 +140,108 @@ let makeFindByMetadata = (
       data->Array.find(matches)
     }
 
-    switch cache.items {
-    | [] => {
-        Console.log2(
-          `${name} metadata lookup cache is empty. Looking for ${name}s on server...`,
-          metadata,
-        )
-        let c = await lookup(~startingAfter=None)
-        Console.log2(`Finished looking for ${name}s by metadata`, metadata)
-        c
+    let lookupFromScratch = async () => {
+      if cache.lock === lock {
+        cache.items = []
+        cache.hasMore = true
+        cache.refreshedAt = now()
       }
-    | items =>
-      Console.log2(`Searching for ${name}s by metadata in cache`, metadata)
-      switch cache.items->Array.find(matches) {
-      | Some(item) => {
-          Console.log2(
-            `Successfully found ${name} ID "${item.id}" by metadata in cache. Retrieving data...`,
-            metadata,
-          )
-          let item = await stripe->retrieve(item.id)
-          let deleted: bool = (item->Obj.magic)["deleted"]
-          let objectWithMetadata = item->(Obj.magic: 'item => objectWithMetadata)
-          let isValid = if deleted {
-            false
-          } else {
-            matches(objectWithMetadata)
-          }
-          Console.log2(
-            `${name} ID "${objectWithMetadata.id}" ${if deleted {
-                "is deleted"
-              } else if isValid {
-                "matches metadata lookup. Returning!"
-              } else {
-                "doesn't match cached metadata"
-              }}`,
-            metadata,
-          )
-          if isValid {
-            Some(item)
-          } else {
-            let indexInCache =
-              cache.items->Array.findIndex(cacheItem => cacheItem.id === objectWithMetadata.id)
-            if indexInCache !== -1 {
-              if deleted {
-                let _ = cache.items->Array.removeInPlace(indexInCache)
-              } else {
-                cache.items->Array.set(
-                  indexInCache,
-                  {
-                    id: objectWithMetadata.id,
-                    metadata: objectWithMetadata.metadata,
-                  },
-                )
-              }
-            }
-            None
-          }
-        }
-      | None =>
-        Console.log2(
-          `${name} by metadata isn't found in cache. Requesting newly created ${name}s...`,
-          metadata,
-        )
-        switch await catchUpToCache(~endingBefore=(items->Array.getUnsafe(0)).id) {
-        | Some(item) as match => {
-            Console.log2(`Successfully found ${name} "${item.id}" by metadata`, metadata)
-            match->(Obj.magic: option<objectWithMetadata> => option<'item>)
-          }
-        | None if cache.hasMore =>
-          Console.log2(
-            `Any new ${name} doesn't match metadata. Looking for older ${name}s on server...`,
-            metadata,
-          )
-          let c = await lookup(~startingAfter=Some((cache.items->Array.last->Option.getUnsafe).id))
-          Console.log2(`Finished looking for ${name}s by metadata`, metadata)
-          c
-        | None => {
-            Console.log2(`${name} by metadata isn't found`, metadata)
-            None
-          }
-        }
-      }
+      let c = await lookup(~startingAfter=None)
+      Console.log2(`Finished looking for ${name}s by metadata`, metadata)
+      c
     }
+
+    let rec search = async () =>
+      switch cache.items {
+      | [] => {
+          Console.log2(
+            `${name} metadata lookup cache is empty. Looking for ${name}s on server...`,
+            metadata,
+          )
+          await lookupFromScratch()
+        }
+      | items =>
+        Console.log2(`Searching for ${name}s by metadata in cache`, metadata)
+        switch items->Array.find(matches) {
+        | Some(item) => {
+            Console.log2(
+              `Successfully found ${name} ID "${item.id}" by metadata in cache. Retrieving data...`,
+              metadata,
+            )
+            let item = await stripe->retrieve(item.id)
+            let deleted: bool = (item->Obj.magic)["deleted"]
+            let objectWithMetadata = item->(Obj.magic: 'item => objectWithMetadata)
+            let isValid = if deleted {
+              false
+            } else {
+              matches(objectWithMetadata)
+            }
+            Console.log2(
+              `${name} ID "${objectWithMetadata.id}" ${if deleted {
+                  "is deleted"
+                } else if isValid {
+                  "matches metadata lookup. Returning!"
+                } else {
+                  "doesn't match cached metadata"
+                }}`,
+              metadata,
+            )
+            if isValid {
+              Some(item)
+            } else {
+              let indexInCache =
+                items->Array.findIndex(cacheItem => cacheItem.id === objectWithMetadata.id)
+              if indexInCache !== -1 {
+                if deleted {
+                  let _ = items->Array.removeInPlace(indexInCache)
+                } else {
+                  items->Array.set(
+                    indexInCache,
+                    {
+                      id: objectWithMetadata.id,
+                      metadata: objectWithMetadata.metadata,
+                    },
+                  )
+                }
+              }
+              // The corrected entry no longer matches, so this terminates.
+              // Another object may now carry the metadata: keep looking.
+              await search()
+            }
+          }
+        | None =>
+          Console.log2(
+            `${name} by metadata isn't found in cache. Requesting newly created ${name}s...`,
+            metadata,
+          )
+          switch await catchUpToCache(~endingBefore=(items->Array.getUnsafe(0)).id) {
+          | Some(item) as match => {
+              Console.log2(`Successfully found ${name} "${item.id}" by metadata`, metadata)
+              match->(Obj.magic: option<objectWithMetadata> => option<'item>)
+            }
+          | None if cache.hasMore =>
+            Console.log2(
+              `Any new ${name} doesn't match metadata. Looking for older ${name}s on server...`,
+              metadata,
+            )
+            let c = await lookup(~startingAfter=Some((cache.items->Array.last->Option.getUnsafe).id))
+            Console.log2(`Finished looking for ${name}s by metadata`, metadata)
+            c
+          | None if now() -. cache.refreshedAt >= refreshIntervalMs =>
+            Console.log2(
+              `${name} by metadata isn't found in cache. Re-listing ${name}s in case an existing one was tagged since...`,
+              metadata,
+            )
+            await lookupFromScratch()
+          | None => {
+              Console.log2(`${name} by metadata isn't found`, metadata)
+              None
+            }
+          }
+        }
+      }
+
+    await search()
   }
 }
 
@@ -1566,13 +1602,25 @@ module Billing = {
     }
   )
 
-  let retrieveCustomer = (stripe, ~config, data) => {
-    stripe->Customer.findByMetadata(processData(data, ~config)["customerMetadata"])
+  // `~customerId` is the caller's own record of the customer (for example a
+  // database column). When given it is used as is and the metadata lookup is
+  // skipped, so a customer re-tagged elsewhere can never be shadowed by this
+  // process's metadata cache. A deleted customer resolves to None.
+  let findCustomer = async (stripe, ~customerId=?, customerMetadata) =>
+    switch customerId {
+    | Some(id) =>
+      let customer = await stripe->Customer.retrieve(id)
+      customer.deleted->Option.getOr(false) ? None : Some(customer)
+    | None => await stripe->Customer.findByMetadata(customerMetadata)
+    }
+
+  let retrieveCustomer = (stripe, ~config, ~customerId=?, data) => {
+    stripe->findCustomer(~customerId?, processData(data, ~config)["customerMetadata"])
   }
 
-  let retrieveSubscriptionWithCustomer = async (stripe, ~config, data) => {
+  let retrieveSubscriptionWithCustomer = async (stripe, ~config, ~customerId=?, data) => {
     let processedData = processData(data, ~config)
-    switch await stripe->Customer.findByMetadata(processedData["customerMetadata"]) {
+    switch await stripe->findCustomer(~customerId?, processedData["customerMetadata"]) {
     | Some(customer) =>
       let preset = switch customer.metadata->Dict.get(toPresetKey(config, processedData)) {
       | Some(preset) => {
@@ -1625,13 +1673,13 @@ module Billing = {
     }
   }
 
-  let retrieveSubscription = async (stripe, ~config, data) => {
-    switch await retrieveSubscriptionWithCustomer(stripe, ~config, data) {
+  let retrieveSubscription = async (stripe, ~config, ~customerId=?, data) => {
+    switch await retrieveSubscriptionWithCustomer(stripe, ~config, ~customerId?, data) {
     | {subscription} => subscription
     }
   }
 
-  let preset = async (stripe, preset: preset<'data, 'plan>) => {
+  let preset = async (stripe, ~customerId=?, preset: preset<'data, 'plan>) => {
     let processedData = processData(preset.data, ~config=preset.config)
     let presetKey = toPresetKey(preset.config, processedData)
     let preset =
@@ -1642,7 +1690,7 @@ module Billing = {
     let metadata = Dict.make()
     metadata->Dict.set(presetKey, preset)
 
-    switch await stripe->Customer.findByMetadata(processedData["customerMetadata"]) {
+    switch await stripe->findCustomer(~customerId?, processedData["customerMetadata"]) {
     | Some(c) =>
       Console.log(`Setting preset for the existing customer...`)
       let c = await stripe->Customer.update(
@@ -1653,6 +1701,10 @@ module Billing = {
       )
       Console.log(`Successfully set preset for the existing customer`)
       c
+    | None if customerId !== None =>
+      JsError.throwWithMessage(
+        `Customer "${customerId->Option.getUnsafe}" is deleted; refusing to create a new one in its place`,
+      )
     | None => {
         Console.log(`Creating a new customer...`)
 
@@ -1689,7 +1741,7 @@ module Billing = {
     discounts?: array<Checkout.Session.discountParam>,
   }
 
-  let createHostedCheckoutSession = async (stripe, params) => {
+  let createHostedCheckoutSession = async (stripe, ~customerId=?, params) => {
     let data = processData(params.data, ~config=params.config)
 
     let (rawPlan, planMetadataFields) = processPlan(params.plan, ~config=params.config)
@@ -1757,7 +1809,17 @@ module Billing = {
       }
     }
 
-    let customer = await stripe->Customer.findOrCreateByMetadata(data["customerMetadata"])
+    let customer = switch customerId {
+    | Some(id) =>
+      switch await stripe->findCustomer(~customerId=id, data["customerMetadata"]) {
+      | Some(c) => c
+      | None =>
+        JsError.throwWithMessage(
+          `Customer "${id}" is deleted; refusing to create a new one in its place`,
+        )
+      }
+    | None => await stripe->Customer.findOrCreateByMetadata(data["customerMetadata"])
+    }
 
     switch await internalRetrieveSubscription(
       stripe,
