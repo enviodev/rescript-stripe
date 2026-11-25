@@ -171,6 +171,32 @@ let customer = await stripe->Stripe.Billing.retrieveCustomer({
 }, ~config=CourseSubscription.config)
 ```
 
+### Use a customer id you already store
+
+By default the customer is found by its `~customerLookup` metadata, through a
+per-process cache of every customer's metadata. If your own database records
+which customer a user has, pass it as `~customerId`: the metadata lookup is
+skipped, so a customer re-tagged elsewhere (another process, an admin change,
+the Stripe dashboard) can never be shadowed by a stale cache entry.
+`createHostedCheckoutSession`, `preset`, `retrieveCustomer`,
+`retrieveSubscription` and `retrieveSubscriptionWithCustomer` all take it.
+A deleted customer resolves to `None`, and checkout and `preset` throw rather
+than create a replacement.
+
+```rescript
+await stripe->Stripe.Billing.createHostedCheckoutSession(
+  ~customerId="cus_...",
+  {config: CourseSubscription.config, data: {...}, plan: Starter, successUrl: "..."},
+)
+```
+
+Without `~customerId`, the paths that create a customer when none is found
+(`Customer.findOrCreateByMetadata`, checkout, `preset`) re-list customers from
+Stripe, at most once a minute, before creating one. So a tag added to an
+existing customer is found instead of duplicated. A plain lookup
+(`findByMetadata`, `retrieveCustomer`, `retrieveSubscription*`) never re-lists:
+a miss costs one call for customers created since the cache was filled.
+
 ### Retrieve subscription
 
 ```rescript

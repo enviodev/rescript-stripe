@@ -2,6 +2,8 @@
 
 import Ava from "ava";
 import * as Stripe from "../src/Stripe.res.mjs";
+import * as Stdlib_Array from "@rescript/runtime/lib/es6/Stdlib_Array.js";
+import * as Stdlib_Option from "@rescript/runtime/lib/es6/Stdlib_Option.js";
 
 Ava("Calculate past usage", t => {
   t.deepEqual(Stripe.Billing.calculatePastUsageBill(100, new Date("2025-01-01"), new Date("2025-01-01"), "month"), 0);
@@ -10,4 +12,400 @@ Ava("Calculate past usage", t => {
   t.deepEqual(Stripe.Billing.calculatePastUsageBill(100, new Date("2025-01-01"), new Date("2025-01-15"), "month"), 45);
 });
 
+let fakeList = (function (server, params) {
+    server.listCalls += 1;
+    if (server.failFullLists && params.ending_before === undefined) {
+      var failed = Promise.reject(new Error("stripe list failed"));
+      failed.catch(function () {});
+      failed.autoPagingToArray = function () { return Promise.reject(new Error("stripe list failed")); };
+      return failed;
+    }
+    var items = server.items.map(function (i) { return { id: i.id, metadata: Object.assign({}, i.metadata) }; });
+    var data;
+    if (params.ending_before !== undefined) {
+      var end = items.findIndex(function (i) { return i.id === params.ending_before; });
+      data = end === -1 ? items : items.slice(0, end);
+    } else if (params.starting_after !== undefined) {
+      var start = items.findIndex(function (i) { return i.id === params.starting_after; });
+      data = items.slice(start + 1);
+    } else {
+      data = items;
+    }
+    var limit = params.limit || 100;
+    var page = { object: "list", url: "", has_more: data.length > limit, data: data.slice(0, limit) };
+    var p = Promise.resolve(page);
+    p.autoPagingToArray = function () { return Promise.resolve(data); };
+    return p;
+  });
+
+let fakeRetrieve = (function (server, id) {
+    var i = server.items.find(function (i) { return i.id === id; });
+    return Promise.resolve(i ? { id: i.id, metadata: Object.assign({}, i.metadata) } : { id: id, metadata: {}, deleted: true });
+  });
+
+function item(id, metadata) {
+  return {
+    id: id,
+    metadata: Object.fromEntries(metadata)
+  };
+}
+
+function makeFindWith(server, clock) {
+  return Stripe.makeFindByMetadata("customer", (param, params) => fakeList(server, params), (param, id) => fakeRetrieve(server, id), undefined, () => clock.contents);
+}
+
+function makeFind(server, clock) {
+  let find = makeFindWith(server, clock);
+  return (stripe, metadata) => find(stripe, true, metadata);
+}
+
+let org = Object.fromEntries([[
+    "organisation_id",
+    "org1"
+  ]]);
+
+function foundId(found) {
+  return Stdlib_Option.map(found, c => c.id);
+}
+
+Ava("Finds an existing customer tagged after the cache was filled", async t => {
+  let server = {
+    items: [
+      {
+        id: "cus_A",
+        metadata: Object.fromEntries([[
+            "organisation_id",
+            "org1"
+          ]])
+      },
+      {
+        id: "cus_B",
+        metadata: Object.fromEntries([])
+      }
+    ],
+    listCalls: 0
+  };
+  let clock = {
+    contents: 1000000
+  };
+  let find = makeFind(server, clock);
+  let found = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found, c => c.id), "cus_A");
+  server.items = [
+    {
+      id: "cus_A",
+      metadata: Object.fromEntries([])
+    },
+    {
+      id: "cus_B",
+      metadata: Object.fromEntries([[
+          "organisation_id",
+          "org1"
+        ]])
+    }
+  ];
+  clock.contents = clock.contents + 61000;
+  let found$1 = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found$1, c => c.id), "cus_B");
+  let calls = server.listCalls;
+  let found$2 = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found$2, c => c.id), "cus_B");
+  t.deepEqual(server.listCalls, calls);
+});
+
+Ava("A miss re-lists from scratch at most once per refresh interval", async t => {
+  let server = {
+    items: [
+      {
+        id: "cus_A",
+        metadata: Object.fromEntries([])
+      },
+      {
+        id: "cus_B",
+        metadata: Object.fromEntries([])
+      }
+    ],
+    listCalls: 0
+  };
+  let clock = {
+    contents: 1000000
+  };
+  let find = makeFind(server, clock);
+  let found = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found, c => c.id), undefined);
+  t.deepEqual(server.listCalls, 1);
+  clock.contents = clock.contents + 30000;
+  let found$1 = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found$1, c => c.id), undefined);
+  t.deepEqual(server.listCalls, 2);
+  server.items = [
+    {
+      id: "cus_A",
+      metadata: Object.fromEntries([])
+    },
+    {
+      id: "cus_B",
+      metadata: Object.fromEntries([[
+          "organisation_id",
+          "org1"
+        ]])
+    }
+  ];
+  clock.contents = clock.contents + 20000;
+  let found$2 = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found$2, c => c.id), undefined);
+  clock.contents = clock.contents + 11000;
+  let found$3 = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found$3, c => c.id), "cus_B");
+});
+
+Ava("A customer created after the cache was filled is found by catching up", async t => {
+  let server = {
+    items: [{
+        id: "cus_A",
+        metadata: Object.fromEntries([])
+      }],
+    listCalls: 0
+  };
+  let clock = {
+    contents: 1000000
+  };
+  let find = makeFind(server, clock);
+  let found = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found, c => c.id), undefined);
+  server.items = [
+    {
+      id: "cus_C",
+      metadata: Object.fromEntries([[
+          "organisation_id",
+          "org1"
+        ]])
+    },
+    {
+      id: "cus_A",
+      metadata: Object.fromEntries([])
+    }
+  ];
+  clock.contents = clock.contents + 1000;
+  let found$1 = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found$1, c => c.id), "cus_C");
+  t.deepEqual(server.listCalls, 2);
+});
+
+Ava("A stale cached match is corrected and the search continues", async t => {
+  let server = {
+    items: [
+      {
+        id: "cus_A",
+        metadata: Object.fromEntries([[
+            "organisation_id",
+            "org1"
+          ]])
+      },
+      {
+        id: "cus_B",
+        metadata: Object.fromEntries([])
+      }
+    ],
+    listCalls: 0
+  };
+  let clock = {
+    contents: 1000000
+  };
+  let find = makeFind(server, clock);
+  let found = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found, c => c.id), "cus_A");
+  server.items = [
+    {
+      id: "cus_C",
+      metadata: Object.fromEntries([[
+          "organisation_id",
+          "org1"
+        ]])
+    },
+    {
+      id: "cus_A",
+      metadata: Object.fromEntries([])
+    },
+    {
+      id: "cus_B",
+      metadata: Object.fromEntries([])
+    }
+  ];
+  let found$1 = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found$1, c => c.id), "cus_C");
+});
+
+Ava("A failed refresh keeps the previous cache", async t => {
+  let server = {
+    items: [
+      {
+        id: "cus_A",
+        metadata: Object.fromEntries([])
+      },
+      {
+        id: "cus_B",
+        metadata: Object.fromEntries([[
+            "organisation_id",
+            "org1"
+          ]])
+      }
+    ],
+    listCalls: 0
+  };
+  let clock = {
+    contents: 1000000
+  };
+  let find = makeFind(server, clock);
+  let found = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found, c => c.id), "cus_B");
+  server.failFullLists = true;
+  clock.contents = clock.contents + 61000;
+  let failed;
+  try {
+    await find(0, Object.fromEntries([[
+        "organisation_id",
+        "org2"
+      ]]));
+    failed = false;
+  } catch (exn) {
+    failed = true;
+  }
+  t.is(failed, true);
+  let found$1 = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found$1, c => c.id), "cus_B");
+});
+
+Ava("A miss after the older pages are scanned still refreshes", async t => {
+  let ids = Stdlib_Array.fromInitializer(150, i => `cus_` + i.toString());
+  let server = {
+    items: ids.map(id => ({
+      id: id,
+      metadata: Object.fromEntries(id === "cus_5" ? [[
+            "organisation_id",
+            "org1"
+          ]] : [])
+    })),
+    listCalls: 0
+  };
+  let clock = {
+    contents: 1000000
+  };
+  let find = makeFind(server, clock);
+  let found = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found, c => c.id), "cus_5");
+  let org2 = Object.fromEntries([[
+      "organisation_id",
+      "org2"
+    ]]);
+  server.items = ids.map(id => {
+    let metadata;
+    switch (id) {
+      case "cus_10" :
+        metadata = [[
+            "organisation_id",
+            "org2"
+          ]];
+        break;
+      case "cus_5" :
+        metadata = [[
+            "organisation_id",
+            "org1"
+          ]];
+        break;
+      default:
+        metadata = [];
+    }
+    return {
+      id: id,
+      metadata: Object.fromEntries(metadata)
+    };
+  });
+  clock.contents = clock.contents + 61000;
+  let found$1 = await find(0, org2);
+  t.deepEqual(Stdlib_Option.map(found$1, c => c.id), "cus_10");
+});
+
+Ava("An empty completed scan follows the refresh interval", async t => {
+  let server = {
+    items: [],
+    listCalls: 0
+  };
+  let clock = {
+    contents: 1000000
+  };
+  let find = makeFind(server, clock);
+  let found = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found, c => c.id), undefined);
+  t.deepEqual(server.listCalls, 1);
+  clock.contents = clock.contents + 1000;
+  let found$1 = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found$1, c => c.id), undefined);
+  t.deepEqual(server.listCalls, 1);
+  clock.contents = clock.contents + 60000;
+  server.items = [{
+      id: "cus_A",
+      metadata: Object.fromEntries([[
+          "organisation_id",
+          "org1"
+        ]])
+    }];
+  let found$2 = await find(0, org);
+  t.deepEqual(Stdlib_Option.map(found$2, c => c.id), "cus_A");
+});
+
+Ava("A plain lookup never re-lists on a miss", async t => {
+  let server = {
+    items: [
+      {
+        id: "cus_A",
+        metadata: Object.fromEntries([])
+      },
+      {
+        id: "cus_B",
+        metadata: Object.fromEntries([])
+      }
+    ],
+    listCalls: 0
+  };
+  let clock = {
+    contents: 1000000
+  };
+  let find = makeFindWith(server, clock);
+  let found = await find(0, undefined, org);
+  t.deepEqual(Stdlib_Option.map(found, c => c.id), undefined);
+  t.deepEqual(server.listCalls, 1);
+  server.items = [
+    {
+      id: "cus_A",
+      metadata: Object.fromEntries([])
+    },
+    {
+      id: "cus_B",
+      metadata: Object.fromEntries([[
+          "organisation_id",
+          "org1"
+        ]])
+    }
+  ];
+  clock.contents = clock.contents + 600000;
+  let found$1 = await find(0, undefined, org);
+  t.deepEqual(Stdlib_Option.map(found$1, c => c.id), undefined);
+  t.deepEqual(server.listCalls, 2);
+  let found$2 = await find(0, true, org);
+  t.deepEqual(Stdlib_Option.map(found$2, c => c.id), "cus_B");
+});
+
+let stripe = 0;
+
+export {
+  fakeList,
+  fakeRetrieve,
+  item,
+  makeFindWith,
+  makeFind,
+  stripe,
+  org,
+  foundId,
+}
 /*  Not a pure module */
