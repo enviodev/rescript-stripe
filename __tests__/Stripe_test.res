@@ -90,13 +90,19 @@ let fakeRetrieve: (fakeServer, string) => promise<Stripe.objectWithMetadata> = %
 
 let item = (id, metadata): Stripe.objectWithMetadata => {id, metadata: Dict.fromArray(metadata)}
 
-let makeFind = (server, ~clock: ref<float>) =>
+let makeFindWith = (server, ~clock: ref<float>) =>
   Stripe.makeFindByMetadata(
     ~name="customer",
     ~list=(_, params) => fakeList(server, params),
     ~retrieve=(_, id) => fakeRetrieve(server, id),
     ~now=() => clock.contents,
   )
+
+// As findOrCreateByMetadata calls it: re-list on a miss before creating.
+let makeFind = (server, ~clock) => {
+  let find = makeFindWith(server, ~clock)
+  (stripe, metadata) => find(stripe, ~refreshOnMiss=true, metadata)
+}
 
 let stripe: Stripe.stripe = Obj.magic(0)
 let org = Dict.fromArray([("organisation_id", "org1")])
@@ -244,4 +250,22 @@ asyncTest("An empty completed scan follows the refresh interval", async t => {
   clock := clock.contents +. 60_000.
   server.items = [item("cus_A", [("organisation_id", "org1")])]
   t->Assert.deepEqual(foundId(await find(stripe, org)), Some("cus_A"))
+})
+
+asyncTest("A plain lookup never re-lists on a miss", async t => {
+  let server = {items: [item("cus_A", []), item("cus_B", [])], listCalls: 0}
+  let clock = ref(1_000_000.)
+  let find = makeFindWith(server, ~clock)
+  t->Assert.deepEqual(foundId(await find(stripe, org)), None)
+  t->Assert.deepEqual(server.listCalls, 1)
+
+  // B is tagged; long past the interval, a plain miss only catches up on new
+  // customers (one call), never a full scan.
+  server.items = [item("cus_A", []), item("cus_B", [("organisation_id", "org1")])]
+  clock := clock.contents +. 600_000.
+  t->Assert.deepEqual(foundId(await find(stripe, org)), None)
+  t->Assert.deepEqual(server.listCalls, 2)
+
+  // The create path's lookup does re-list, and finds it.
+  t->Assert.deepEqual(foundId(await find(stripe, ~refreshOnMiss=true, org)), Some("cus_B"))
 })

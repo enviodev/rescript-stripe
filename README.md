@@ -190,9 +190,12 @@ await stripe->Stripe.Billing.createHostedCheckoutSession(
 )
 ```
 
-Without `~customerId`, a lookup miss re-lists customers from Stripe at most
-once a minute before it reports none, so a tag added to an existing customer
-is picked up within that window.
+Without `~customerId`, the paths that create a customer when none is found
+(`Customer.findOrCreateByMetadata`, checkout, `preset`) re-list customers from
+Stripe, at most once a minute, before creating one. So a tag added to an
+existing customer is found instead of duplicated. A plain lookup
+(`findByMetadata`, `retrieveCustomer`, `retrieveSubscription*`) never re-lists:
+a miss costs one call for customers created since the cache was filled.
 
 ### Retrieve subscription
 

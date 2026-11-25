@@ -49,11 +49,15 @@ type baseListParams = {
 // metadata changes reach the cache only in two ways:
 //   - a cached match is re-read before it is returned; a stale one is
 //     corrected and the search continues;
-//   - a miss re-lists from scratch, at most once per `refreshIntervalMs`, so a
-//     tag added to an existing object elsewhere (another process, an admin
-//     change, the Stripe dashboard) is found instead of reported missing.
-// Without the second, findOrCreateByMetadata would create a duplicate of an
-// object that exists but was tagged after this process cached it.
+//   - with `~refreshOnMiss=true`, a miss re-lists from scratch, at most once
+//     per `refreshIntervalMs`, so a tag added to an existing object elsewhere
+//     (another process, an admin change, the Stripe dashboard) is found
+//     instead of reported missing.
+// The re-list is a full scan, so it is opt-in: only a caller about to CREATE
+// on a miss needs it (findOrCreateByMetadata, Billing.preset, checkout), since
+// that is where a stale cache does harm (a duplicate). A plain lookup keeps the
+// cheap miss, which matters when misses are the common case (most users have
+// no customer).
 let makeFindByMetadata = (
   ~name,
   ~list: (stripe, baseListParams) => promise<page<'item>>,
@@ -69,7 +73,7 @@ let makeFindByMetadata = (
     generation: 0,
   }
 
-  async (stripe: stripe, metadata: dict<string>) => {
+  async (stripe: stripe, ~refreshOnMiss=false, metadata: dict<string>) => {
     let lock = cache.lock + 1
     cache.lock = lock
 
@@ -261,7 +265,7 @@ let makeFindByMetadata = (
             }
             switch older {
             | Some(_) => older
-            | None if refreshDue() =>
+            | None if refreshOnMiss && refreshDue() =>
               Console.log2(
                 `${name} by metadata isn't found in cache. Re-listing ${name}s in case an existing one was tagged since...`,
                 metadata,
@@ -854,7 +858,9 @@ module Customer = {
   )
 
   let findOrCreateByMetadata = async (stripe, metadata) => {
-    switch await stripe->findByMetadata(metadata) {
+    // Re-list on a miss (throttled) before creating, so a customer tagged
+    // after this process cached it is found instead of duplicated.
+    switch await stripe->findByMetadata(~refreshOnMiss=true, metadata) {
     | Some(c) => c
     | None => {
         Console.log(`Creating a new customer...`)
@@ -1641,12 +1647,12 @@ module Billing = {
   // database column). When given it is used as is and the metadata lookup is
   // skipped, so a customer re-tagged elsewhere can never be shadowed by this
   // process's metadata cache. A deleted customer resolves to None.
-  let findCustomer = async (stripe, ~customerId=?, customerMetadata) =>
+  let findCustomer = async (stripe, ~customerId=?, ~refreshOnMiss=?, customerMetadata) =>
     switch customerId {
     | Some(id) =>
       let customer = await stripe->Customer.retrieve(id)
       customer.deleted->Option.getOr(false) ? None : Some(customer)
-    | None => await stripe->Customer.findByMetadata(customerMetadata)
+    | None => await stripe->Customer.findByMetadata(~refreshOnMiss?, customerMetadata)
     }
 
   let retrieveCustomer = (stripe, ~config, ~customerId=?, data) => {
@@ -1725,7 +1731,12 @@ module Billing = {
     let metadata = Dict.make()
     metadata->Dict.set(presetKey, preset)
 
-    switch await stripe->findCustomer(~customerId?, processedData["customerMetadata"]) {
+    // Creates on a miss, so re-list first like findOrCreateByMetadata.
+    switch await stripe->findCustomer(
+      ~customerId?,
+      ~refreshOnMiss=true,
+      processedData["customerMetadata"],
+    ) {
     | Some(c) =>
       Console.log(`Setting preset for the existing customer...`)
       let c = await stripe->Customer.update(

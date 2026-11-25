@@ -24,7 +24,8 @@ function makeFindByMetadata(name, list, retrieve, refreshIntervalMsOpt, nowOpt) 
     refreshedAt: 0,
     generation: 0
   };
-  return async (stripe, metadata) => {
+  return async (stripe, refreshOnMissOpt, metadata) => {
+    let refreshOnMiss = refreshOnMissOpt !== undefined ? refreshOnMissOpt : false;
     let lock = cache.lock + 1 | 0;
     cache.lock = lock;
     let entries = Object.entries(metadata);
@@ -164,7 +165,7 @@ function makeFindByMetadata(name, list, retrieve, refreshIntervalMsOpt, nowOpt) 
       let older = match$1 && match$2 !== undefined ? (console.log(`Any new ` + name + ` doesn't match metadata. Looking for older ` + name + `s on server...`, metadata), await lookup(match$2.id)) : undefined;
       if (older !== undefined) {
         return older;
-      } else if (refreshDue()) {
+      } else if (refreshOnMiss && refreshDue()) {
         console.log(name + ` by metadata isn't found in cache. Re-listing ` + name + `s in case an existing one was tagged since...`, metadata);
         return await lookupFromScratch();
       } else {
@@ -233,7 +234,7 @@ function getPriceConfig(productConfig, interval) {
 
 async function syncProduct(stripe, productConfig, meters, interval) {
   console.log(`Searching for active product "` + productConfig.ref + `"...`);
-  let p = await findByMetadata(stripe, {
+  let p = await findByMetadata(stripe, undefined, {
     "#product_ref": productConfig.ref
   });
   let product;
@@ -452,7 +453,7 @@ let findByMetadata$1 = makeFindByMetadata("customer", (stripe, params) => stripe
 }), (prim0, prim1) => prim0.customers.retrieve(prim1), undefined, undefined);
 
 async function findOrCreateByMetadata(stripe, metadata) {
-  let c = await findByMetadata$1(stripe, metadata);
+  let c = await findByMetadata$1(stripe, true, metadata);
   if (c !== undefined) {
     return c;
   }
@@ -805,9 +806,9 @@ async function internalRetrieveSubscription(stripe, data, config, customerId) {
   return s;
 }
 
-async function findCustomer(stripe, customerId, customerMetadata) {
+async function findCustomer(stripe, customerId, refreshOnMiss, customerMetadata) {
   if (customerId === undefined) {
-    return await findByMetadata$1(stripe, customerMetadata);
+    return await findByMetadata$1(stripe, refreshOnMiss, customerMetadata);
   }
   let customer = await stripe.customers.retrieve(customerId);
   if (Stdlib_Option.getOr(customer.deleted, false)) {
@@ -818,12 +819,12 @@ async function findCustomer(stripe, customerId, customerMetadata) {
 }
 
 function retrieveCustomer(stripe, config, customerId, data) {
-  return findCustomer(stripe, customerId, processData(data, config).customerMetadata);
+  return findCustomer(stripe, customerId, undefined, processData(data, config).customerMetadata);
 }
 
 async function retrieveSubscriptionWithCustomer(stripe, config, customerId, data) {
   let processedData = processData(data, config);
-  let customer = await findCustomer(stripe, customerId, processedData.customerMetadata);
+  let customer = await findCustomer(stripe, customerId, undefined, processedData.customerMetadata);
   if (customer === undefined) {
     return {
       customer: undefined,
@@ -883,7 +884,7 @@ async function preset(stripe, customerId, preset$1) {
   ], toPresetSchema(preset$1.config), undefined);
   let metadata = {};
   metadata[presetKey] = preset$2;
-  let c = await findCustomer(stripe, customerId, processedData.customerMetadata);
+  let c = await findCustomer(stripe, customerId, true, processedData.customerMetadata);
   if (c !== undefined) {
     console.log(`Setting preset for the existing customer...`);
     let c$1 = await stripe.customers.update(c.id, {
@@ -955,7 +956,7 @@ async function createHostedCheckoutSession(stripe, customerId, params) {
   }
   let customer;
   if (customerId !== undefined) {
-    let c = await findCustomer(stripe, customerId, data.customerMetadata);
+    let c = await findCustomer(stripe, customerId, undefined, data.customerMetadata);
     customer = c !== undefined ? c : Stdlib_JsError.throwWithMessage(`Customer "` + customerId + `" is deleted; refusing to create a new one in its place`);
   } else {
     customer = await findOrCreateByMetadata(stripe, data.customerMetadata);
