@@ -23,6 +23,9 @@ type metadataLookupCache = {
   // When the cache was last filled from scratch (ms since epoch). A miss
   // re-lists from scratch at most once per refresh interval.
   mutable refreshedAt: float,
+  // Bumped by every refill from scratch, so a lookup that awaited across one
+  // knows the items it read are gone.
+  mutable generation: int,
 }
 
 type page<'item> = {
@@ -63,6 +66,7 @@ let makeFindByMetadata = (
     lock: 0,
     items: [],
     refreshedAt: 0.,
+    generation: 0,
   }
 
   async (stripe: stripe, metadata: dict<string>) => {
@@ -101,7 +105,8 @@ let makeFindByMetadata = (
     let rec lookup = async (~startingAfter) => {
       let page = (
         await stripe->list({
-          limit: 1000,
+          // Stripe's documented maximum page size.
+          limit: 100,
           ?startingAfter,
         })
       )->(Obj.magic: page<'item> => page<objectWithMetadata>)
@@ -141,18 +146,39 @@ let makeFindByMetadata = (
     }
 
     let lookupFromScratch = async () => {
+      let previous = (cache.items, cache.hasMore)
+      let generation = cache.generation + 1
       if cache.lock === lock {
         cache.items = []
         cache.hasMore = true
+        // Also the retry throttle when the listing fails.
         cache.refreshedAt = now()
+        cache.generation = generation
       }
-      let c = await lookup(~startingAfter=None)
+      let c = try await lookup(~startingAfter=None) catch {
+      | err =>
+        // A failed refill must not leave an empty or partial cache behind:
+        // put the previous one back unless a newer refill replaced it.
+        if cache.generation === generation {
+          let (items, hasMore) = previous
+          cache.items = items
+          cache.hasMore = hasMore
+        }
+        throw(err)
+      }
       Console.log2(`Finished looking for ${name}s by metadata`, metadata)
       c
     }
 
+    let refreshDue = () => now() -. cache.refreshedAt >= refreshIntervalMs
+
     let rec search = async () =>
       switch cache.items {
+      // A completed scan that found nothing: the same refresh policy as a miss.
+      | [] if !cache.hasMore && !refreshDue() => {
+          Console.log2(`${name} by metadata isn't found`, metadata)
+          None
+        }
       | [] => {
           Console.log2(
             `${name} metadata lookup cache is empty. Looking for ${name}s on server...`,
@@ -214,28 +240,37 @@ let makeFindByMetadata = (
             `${name} by metadata isn't found in cache. Requesting newly created ${name}s...`,
             metadata,
           )
+          let generation = cache.generation
           switch await catchUpToCache(~endingBefore=(items->Array.getUnsafe(0)).id) {
           | Some(item) as match => {
               Console.log2(`Successfully found ${name} "${item.id}" by metadata`, metadata)
               match->(Obj.magic: option<objectWithMetadata> => option<'item>)
             }
-          | None if cache.hasMore =>
-            Console.log2(
-              `Any new ${name} doesn't match metadata. Looking for older ${name}s on server...`,
-              metadata,
-            )
-            let c = await lookup(~startingAfter=Some((cache.items->Array.last->Option.getUnsafe).id))
-            Console.log2(`Finished looking for ${name}s by metadata`, metadata)
-            c
-          | None if now() -. cache.refreshedAt >= refreshIntervalMs =>
-            Console.log2(
-              `${name} by metadata isn't found in cache. Re-listing ${name}s in case an existing one was tagged since...`,
-              metadata,
-            )
-            await lookupFromScratch()
-          | None => {
-              Console.log2(`${name} by metadata isn't found`, metadata)
-              None
+          // Another lookup refilled the cache meanwhile: search what is there now
+          // rather than mix this generation's miss with that one's state.
+          | None if cache.generation !== generation => await search()
+          | None =>
+            let older = switch (cache.hasMore, cache.items->Array.last) {
+            | (true, Some(last)) =>
+              Console.log2(
+                `Any new ${name} doesn't match metadata. Looking for older ${name}s on server...`,
+                metadata,
+              )
+              await lookup(~startingAfter=Some(last.id))
+            | _ => None
+            }
+            switch older {
+            | Some(_) => older
+            | None if refreshDue() =>
+              Console.log2(
+                `${name} by metadata isn't found in cache. Re-listing ${name}s in case an existing one was tagged since...`,
+                metadata,
+              )
+              await lookupFromScratch()
+            | None => {
+                Console.log2(`${name} by metadata isn't found`, metadata)
+                None
+              }
             }
           }
         }

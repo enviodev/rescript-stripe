@@ -21,7 +21,8 @@ function makeFindByMetadata(name, list, retrieve, refreshIntervalMsOpt, nowOpt) 
     hasMore: true,
     lock: 0,
     items: [],
-    refreshedAt: 0
+    refreshedAt: 0,
+    generation: 0
   };
   return async (stripe, metadata) => {
     let lock = cache.lock + 1 | 0;
@@ -59,7 +60,7 @@ function makeFindByMetadata(name, list, retrieve, refreshIntervalMsOpt, nowOpt) 
     };
     let lookup = async startingAfter => {
       let page = await list(stripe, {
-        limit: 1000,
+        limit: 100,
         starting_after: startingAfter
       });
       updateCache(page.data, page.has_more, false);
@@ -86,68 +87,90 @@ function makeFindByMetadata(name, list, retrieve, refreshIntervalMsOpt, nowOpt) 
       return data.find(matches);
     };
     let lookupFromScratch = async () => {
+      let previous_0 = cache.items;
+      let previous_1 = cache.hasMore;
+      let generation = cache.generation + 1 | 0;
       if (cache.lock === lock) {
         cache.items = [];
         cache.hasMore = true;
         cache.refreshedAt = now();
+        cache.generation = generation;
       }
-      let c = await lookup(undefined);
+      let c;
+      try {
+        c = await lookup(undefined);
+      } catch (err) {
+        if (cache.generation === generation) {
+          cache.items = previous_0;
+          cache.hasMore = previous_1;
+        }
+        throw err;
+      }
       console.log(`Finished looking for ` + name + `s by metadata`, metadata);
       return c;
     };
+    let refreshDue = () => now() - cache.refreshedAt >= refreshIntervalMs;
     let search = async () => {
       let items = cache.items;
-      if (items.length !== 0) {
-        console.log(`Searching for ` + name + `s by metadata in cache`, metadata);
-        let item = items.find(matches);
-        if (item !== undefined) {
-          console.log(`Successfully found ` + name + ` ID "` + item.id + `" by metadata in cache. Retrieving data...`, metadata);
-          let item$1 = await retrieve(stripe, item.id);
-          let deleted = item$1.deleted;
-          let isValid = deleted ? false : matches(item$1);
-          console.log(name + ` ID "` + item$1.id + `" ` + (
-            deleted ? "is deleted" : (
-                isValid ? "matches metadata lookup. Returning!" : "doesn't match cached metadata"
-              )
-          ), metadata);
-          if (isValid) {
-            return Primitive_option.some(item$1);
-          }
-          let indexInCache = items.findIndex(cacheItem => cacheItem.id === item$1.id);
-          if (indexInCache !== -1) {
-            if (deleted) {
-              items.splice(indexInCache, 1);
-            } else {
-              items[indexInCache] = {
-                id: item$1.id,
-                metadata: item$1.metadata
-              };
-            }
-          }
-          return await search();
+      if (items.length === 0) {
+        if (!cache.hasMore && !refreshDue()) {
+          console.log(name + ` by metadata isn't found`, metadata);
+          return;
+        } else {
+          console.log(name + ` metadata lookup cache is empty. Looking for ` + name + `s on server...`, metadata);
+          return await lookupFromScratch();
         }
-        console.log(name + ` by metadata isn't found in cache. Requesting newly created ` + name + `s...`, metadata);
-        let match = await catchUpToCache(items[0].id);
-        if (match !== undefined) {
-          console.log(`Successfully found ` + name + ` "` + match.id + `" by metadata`, metadata);
-          return match;
-        }
-        if (!cache.hasMore) {
-          if (now() - cache.refreshedAt >= refreshIntervalMs) {
-            console.log(name + ` by metadata isn't found in cache. Re-listing ` + name + `s in case an existing one was tagged since...`, metadata);
-            return await lookupFromScratch();
-          } else {
-            console.log(name + ` by metadata isn't found`, metadata);
-            return;
-          }
-        }
-        console.log(`Any new ` + name + ` doesn't match metadata. Looking for older ` + name + `s on server...`, metadata);
-        let c = await lookup(Stdlib_Array.last(cache.items).id);
-        console.log(`Finished looking for ` + name + `s by metadata`, metadata);
-        return c;
       }
-      console.log(name + ` metadata lookup cache is empty. Looking for ` + name + `s on server...`, metadata);
-      return await lookupFromScratch();
+      console.log(`Searching for ` + name + `s by metadata in cache`, metadata);
+      let item = items.find(matches);
+      if (item !== undefined) {
+        console.log(`Successfully found ` + name + ` ID "` + item.id + `" by metadata in cache. Retrieving data...`, metadata);
+        let item$1 = await retrieve(stripe, item.id);
+        let deleted = item$1.deleted;
+        let isValid = deleted ? false : matches(item$1);
+        console.log(name + ` ID "` + item$1.id + `" ` + (
+          deleted ? "is deleted" : (
+              isValid ? "matches metadata lookup. Returning!" : "doesn't match cached metadata"
+            )
+        ), metadata);
+        if (isValid) {
+          return Primitive_option.some(item$1);
+        }
+        let indexInCache = items.findIndex(cacheItem => cacheItem.id === item$1.id);
+        if (indexInCache !== -1) {
+          if (deleted) {
+            items.splice(indexInCache, 1);
+          } else {
+            items[indexInCache] = {
+              id: item$1.id,
+              metadata: item$1.metadata
+            };
+          }
+        }
+        return await search();
+      }
+      console.log(name + ` by metadata isn't found in cache. Requesting newly created ` + name + `s...`, metadata);
+      let generation = cache.generation;
+      let match = await catchUpToCache(items[0].id);
+      if (match !== undefined) {
+        console.log(`Successfully found ` + name + ` "` + match.id + `" by metadata`, metadata);
+        return match;
+      }
+      if (cache.generation !== generation) {
+        return await search();
+      }
+      let match$1 = cache.hasMore;
+      let match$2 = Stdlib_Array.last(cache.items);
+      let older = match$1 && match$2 !== undefined ? (console.log(`Any new ` + name + ` doesn't match metadata. Looking for older ` + name + `s on server...`, metadata), await lookup(match$2.id)) : undefined;
+      if (older !== undefined) {
+        return older;
+      } else if (refreshDue()) {
+        console.log(name + ` by metadata isn't found in cache. Re-listing ` + name + `s in case an existing one was tagged since...`, metadata);
+        return await lookupFromScratch();
+      } else {
+        console.log(name + ` by metadata isn't found`, metadata);
+        return;
+      }
     };
     return await search();
   };

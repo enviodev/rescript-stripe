@@ -49,11 +49,19 @@ test("Calculate past usage", t => {
 type fakeServer = {
   mutable items: array<Stripe.objectWithMetadata>,
   mutable listCalls: int,
+  // Fail full listings (not the catch-up of newer customers).
+  mutable failFullLists?: bool,
 }
 
 let fakeList: (fakeServer, Stripe.baseListParams) => promise<Stripe.page<Stripe.objectWithMetadata>> = %raw(`
   function (server, params) {
     server.listCalls += 1;
+    if (server.failFullLists && params.ending_before === undefined) {
+      var failed = Promise.reject(new Error("stripe list failed"));
+      failed.catch(function () {});
+      failed.autoPagingToArray = function () { return Promise.reject(new Error("stripe list failed")); };
+      return failed;
+    }
     var items = server.items.map(function (i) { return { id: i.id, metadata: Object.assign({}, i.metadata) }; });
     var data;
     if (params.ending_before !== undefined) {
@@ -170,4 +178,70 @@ asyncTest("A stale cached match is corrected and the search continues", async t 
   ]
   // Before: None on the stale A, without looking further.
   t->Assert.deepEqual(foundId(await find(stripe, org)), Some("cus_C"))
+})
+
+asyncTest("A failed refresh keeps the previous cache", async t => {
+  let server = {items: [item("cus_A", []), item("cus_B", [("organisation_id", "org1")])], listCalls: 0}
+  let clock = ref(1_000_000.)
+  let find = makeFind(server, ~clock)
+  t->Assert.deepEqual(foundId(await find(stripe, org)), Some("cus_B"))
+
+  // A miss past the interval re-lists, and Stripe's list fails.
+  server.failFullLists = Some(true)
+  clock := clock.contents +. 61_000.
+  let failed = try {
+    let _ = await find(stripe, Dict.fromArray([("organisation_id", "org2")]))
+    false
+  } catch {
+  | _ => true
+  }
+  t->Assert.is(failed, true)
+
+  // The cached customer is still found by id: before the restore the cache
+  // was left empty, and this lookup's full listing would fail too.
+  t->Assert.deepEqual(foundId(await find(stripe, org)), Some("cus_B"))
+})
+
+asyncTest("A miss after the older pages are scanned still refreshes", async t => {
+  // 150 customers: the first lookup matches on the first page of 100, so the
+  // cache stays partial.
+  let ids = Array.fromInitializer(~length=150, i => `cus_${i->Int.toString}`)
+  let server = {
+    items: ids->Array.map(id => item(id, id == "cus_5" ? [("organisation_id", "org1")] : [])),
+    listCalls: 0,
+  }
+  let clock = ref(1_000_000.)
+  let find = makeFind(server, ~clock)
+  t->Assert.deepEqual(foundId(await find(stripe, org)), Some("cus_5"))
+
+  // A cached first-page customer is tagged for another org.
+  let org2 = Dict.fromArray([("organisation_id", "org2")])
+  server.items = ids->Array.map(id =>
+    item(
+      id,
+      switch id {
+      | "cus_5" => [("organisation_id", "org1")]
+      | "cus_10" => [("organisation_id", "org2")]
+      | _ => []
+      },
+    )
+  )
+  clock := clock.contents +. 61_000.
+  // Before: catching up and scanning the older pages missed, and it returned
+  // None without the refresh.
+  t->Assert.deepEqual(foundId(await find(stripe, org2)), Some("cus_10"))
+})
+
+asyncTest("An empty completed scan follows the refresh interval", async t => {
+  let server = {items: [], listCalls: 0}
+  let clock = ref(1_000_000.)
+  let find = makeFind(server, ~clock)
+  t->Assert.deepEqual(foundId(await find(stripe, org)), None)
+  t->Assert.deepEqual(server.listCalls, 1)
+  clock := clock.contents +. 1_000.
+  t->Assert.deepEqual(foundId(await find(stripe, org)), None)
+  t->Assert.deepEqual(server.listCalls, 1)
+  clock := clock.contents +. 60_000.
+  server.items = [item("cus_A", [("organisation_id", "org1")])]
+  t->Assert.deepEqual(foundId(await find(stripe, org)), Some("cus_A"))
 })
